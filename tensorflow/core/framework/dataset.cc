@@ -383,7 +383,24 @@ Status IteratorBase::InitializeBase(IteratorContext* ctx,
     auto factory = [ctx, this](model::Node::Args args) {
       return CreateNode(ctx, std::move(args));
     };
-    model->AddNode(std::move(factory), prefix(), parent->model_node(), &node_);
+    // Push dataset_name for modeling per-dataset resources
+    DatasetBaseIterator* cast_iter = dynamic_cast<DatasetBaseIterator*>(this);
+    const string dataset_name(
+        cast_iter->dataset()->node_name());  // NOTE(mkuchnik): This is not
+                                             // consistent with graphdef
+    const GraphDef& dataset_graph_def = cast_iter->dataset()->graph_def_;
+    if (cast_iter->dataset()->is_root_ && dataset_graph_def.IsInitialized()) {
+      // NOTE(mkuchnik): To make consistent, we have to copy the newest graphdef
+      VLOG(0) << "Initializing graph_def for model from "
+              << cast_iter->dataset()->node_name() << " with "
+              << dataset_graph_def.DebugString();
+      model->graph_def_.CopyFrom(dataset_graph_def);
+    }
+    VLOG(3) << "Adding dataset_name " << cast_iter->dataset()->DebugString()
+            << " " << cast_iter->dataset()->node_name();
+    model->AddNode(std::move(factory), prefix(), parent->model_node(), &node_,
+                   dataset_name, cast_iter->dataset()->Parallelism(),
+                   cast_iter->dataset()->Cardinality());
     cleanup_fns_.push_back([this, model]() { model->RemoveNode(node_); });
   }
   return Status::OK();
@@ -522,6 +539,7 @@ void WarnProtoConflicts(const protobuf::Message& src, protobuf::Message* dst) {
           WARN_PROTO_ENUM_FIELD_CONFLICT(reflection, field, src, dst);
           break;
         default: {
+          // TODO(mkuchnik): analysis proto is type string and is missing here.
           LOG(ERROR) << "Unrecognized proto type for field "
                      << field->full_name();
         }
@@ -797,11 +815,12 @@ Status DatasetBaseIterator::GetNext(IteratorContext* ctx,
   auto model = ctx->model();
   if (model && model->collect_resource_usage() && node_) {
     int64_t now_nanos = EnvTime::NowNanos();
+    int64_t thread_now_nanos = model::ThreadNowNanos();
     auto output = node_->output();
     if (output) {
-      output->record_stop(now_nanos);
+      output->record_stop_and_wait(now_nanos, thread_now_nanos);
     }
-    node_->record_start(now_nanos);
+    node_->record_start(now_nanos, thread_now_nanos);
   }
   Status s = GetNextInternal(ctx, out_tensors, end_of_sequence);
   if (TF_PREDICT_TRUE(s.ok() && !*end_of_sequence)) {
@@ -810,10 +829,11 @@ Status DatasetBaseIterator::GetNext(IteratorContext* ctx,
   }
   if (model && model->collect_resource_usage() && node_) {
     int64_t now_nanos = EnvTime::NowNanos();
-    node_->record_stop(now_nanos);
+    int64_t thread_now_nanos = model::ThreadNowNanos();
+    node_->record_stop(now_nanos, thread_now_nanos);
     auto output = node_->output();
     if (output) {
-      output->record_start(now_nanos);
+      output->record_start_and_wait(now_nanos, thread_now_nanos);
     }
   }
   if (TF_PREDICT_FALSE(errors::IsOutOfRange(s))) {
@@ -839,6 +859,7 @@ Status DatasetBaseIterator::Skip(IteratorContext* ctx, int num_to_skip,
     auto output = node_->output();
     if (output) {
       output->record_stop(now_nanos);
+      output->record_start_wait(now_nanos);
     }
     node_->record_start(now_nanos);
   }
@@ -849,6 +870,7 @@ Status DatasetBaseIterator::Skip(IteratorContext* ctx, int num_to_skip,
     auto output = node_->output();
     if (output) {
       output->record_start(now_nanos);
+      output->record_stop_wait(now_nanos);
     }
   }
   if (TF_PREDICT_FALSE(errors::IsOutOfRange(s))) {

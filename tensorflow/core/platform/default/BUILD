@@ -1,7 +1,11 @@
 # Tensorflow default + linux implementations of tensorflow/core/platform libraries.
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("//tensorflow:tensorflow.bzl", "filegroup")
-load("//tensorflow:tensorflow.bzl", "if_not_windows", "tf_cc_test", "tf_copts")
+load("//tensorflow:tensorflow.bzl",
+     "if_windows",
+     "if_not_windows",
+     "tf_cc_test",
+     "tf_copts")
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(
@@ -73,6 +77,16 @@ cc_library(
 )
 
 cc_library(
+    name = "posix_throttle",
+    srcs = ["posix_throttle.cc"],
+    hdrs = ["posix_throttle.h"],
+    copts = tf_copts(),
+    deps = [
+        "//tensorflow/core:lib",
+    ],
+)
+
+cc_library(
     name = "env",
     srcs = [
         "posix_file_system.cc",
@@ -95,6 +109,7 @@ cc_library(
         "nobuilder",
     ],
     deps = [
+        ":posix_throttle",
         "//tensorflow/core:error_codes_proto_impl_cc",
         "//tensorflow/core/lib/core:stringpiece",
         "//tensorflow/core/platform",
@@ -440,6 +455,20 @@ tf_cc_test(
         ":test_benchmark",
         "//tensorflow/core:lib",
         "//tensorflow/core:test",
+    ],
+)
+
+tf_cc_test(
+    name = "posix_throttle_test",
+    size = "small",
+    srcs = ["posix_throttle_test.cc"],
+    linkopts = if_windows(["-DEFAULTLIB:ws2_32.lib"]),
+    deps = [
+        ":posix_throttle",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core/platform:str_util",
     ],
 )
 

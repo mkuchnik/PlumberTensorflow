@@ -123,6 +123,7 @@ exports_files(
         "function.proto",
         "graph.proto",
         "graph_transfer_info.proto",
+        "input_pipeline_analysis.proto",
         "kernel_def.proto",
         "log_memory.proto",
         "model.proto",
@@ -1435,6 +1436,16 @@ tf_proto_library(
 )
 
 tf_proto_library(
+    name = "input_pipeline_analysis_proto",
+    srcs = ["input_pipeline_analysis.proto"],
+    cc_api_version = 2,
+    make_default_target_header_only = True,
+    protodeps = [
+        ":graph_proto",
+    ],
+)
+
+tf_proto_library(
     name = "node_def_proto",
     srcs = ["node_def.proto"],
     cc_api_version = 2,
@@ -1694,6 +1705,7 @@ tf_proto_library(
         ":model_proto",
         ":node_def_proto",
         ":op_def_proto",
+        ":input_pipeline_analysis_proto",
         ":reader_base_proto",
         ":resource_handle_proto",
         ":step_stats_proto",

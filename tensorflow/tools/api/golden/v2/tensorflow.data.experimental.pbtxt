@@ -69,6 +69,10 @@ tf_module {
     mtype: "<type \'int\'>"
   }
   member {
+    name: "analysis"
+    mtype: "<type \'module\'>"
+  }
+  member {
     name: "service"
     mtype: "<type \'module\'>"
   }
@@ -195,6 +199,10 @@ tf_module {
   member_method {
     name: "shuffle_and_repeat"
     argspec: "args=[\'buffer_size\', \'count\', \'seed\'], varargs=None, keywords=None, defaults=[\'None\', \'None\'], "
+  }
+  member_method {
+    name: "sleep"
+    argspec: "args=[\'sleep_microseconds\'], varargs=None, keywords=None, defaults=None"
   }
   member_method {
     name: "snapshot"

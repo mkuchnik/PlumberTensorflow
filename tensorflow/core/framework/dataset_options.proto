@@ -107,6 +107,24 @@ message OptimizationOptions {
   oneof optional_shuffle_and_repeat_fusion {
     bool shuffle_and_repeat_fusion = 17;
   }
+
+  // When autotuning is enabled (through `autotune`), determines the
+  // output filename to use.)
+  oneof optional_autotune_stats_filename {
+    string autotune_stats_filename = 100;
+  }
+
+  // When autotuning is enabled (through `autotune`), determines the
+  // period (in ms) at which to write out statistics.
+  oneof optional_autotune_stats_dump_period {
+    int32 autotune_stats_dump_period = 101;
+  }
+
+  // When autotuning is enabled (through `autotune`), determines the
+  // interval (in GetNext calls) at which to collect spans.
+  oneof optional_autotune_span_collection_interval {
+    int32 autotune_span_collection_interval = 102;
+  }
 }
 
 message ThreadingOptions {

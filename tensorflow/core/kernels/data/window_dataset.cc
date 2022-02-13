@@ -36,11 +36,13 @@ constexpr char kCurIndex[] = "i";
 class Window : public DatasetBase {
  public:
   Window(std::vector<std::vector<Tensor>> elements, DataTypeVector output_types,
-         std::vector<PartialTensorShape> output_shapes)
+         std::vector<PartialTensorShape> output_shapes,
+         const std::string& node_name)
       : DatasetBase(DatasetContext({kWindowOp, kWindow})),
         elements_(std::move(elements)),
         output_types_(std::move(output_types)),
         output_shapes_(std::move(output_shapes)) {}
+  // TODO(mkuchnik): Add back node_name
 
   std::unique_ptr<IteratorBase> MakeIteratorInternal(
       const string& prefix) const override {
@@ -168,7 +170,10 @@ class WindowOp : public DatasetOpKernel {
       }
       elements.push_back(std::move(element));
     }
-    *output = new Window(std::move(elements), output_types_, output_shapes_);
+    // TODO(mkuchnik): Add back node_name
+    const std::string node_name = kWindow;
+    *output = new Window(std::move(elements), output_types_, output_shapes_,
+                         node_name);
   }
 
  private:
@@ -183,11 +188,12 @@ REGISTER_KERNEL_BUILDER(Name("WindowOp").Device(DEVICE_CPU), WindowOp);
 Status NewWindow(std::vector<std::vector<Tensor>> elements,
                  DataTypeVector output_types,
                  std::vector<PartialTensorShape> output_shapes,
+                 const std::string& node_name,
                  DatasetBase** out_dataset) {
   // TODO(mrry): If this becomes more public, we must validate that
   // the elements match the output_types and output_shapes.
   *out_dataset = new Window(std::move(elements), std::move(output_types),
-                            std::move(output_shapes));
+                            std::move(output_shapes), node_name);
   (*out_dataset)->Initialize();
   return Status::OK();
 }

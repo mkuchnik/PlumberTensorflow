@@ -34,6 +34,8 @@ limitations under the License.
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/notification.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
+#include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/profile_utils/cpu_utils.h"
 
 #if !defined(IS_MOBILE_PLATFORM)
 #include "tensorflow/core/grappler/grappler_item.h"
@@ -44,6 +46,9 @@ namespace tensorflow {
 namespace data {
 namespace {
 
+typedef std::function<void (void)> TClosure;
+typedef std::function<void (TClosure)> TRunner;
+
 // Simplistic implementation of the `StepStatsCollectorInterface` that only
 // cares about collecting the CPU time needed to execute a captured function.
 class SimpleStepStatsCollector : public StepStatsCollectorInterface {
@@ -51,6 +56,13 @@ class SimpleStepStatsCollector : public StepStatsCollectorInterface {
   void IncrementProcessingTime(int64_t delta) {
     mutex_lock l(mu_);
     processing_time_ += delta;
+  }
+
+  void IncrementSchedulingDelayTime(int64 delta) {
+#ifndef LIGHTWEIGHT_METRICS
+    mutex_lock l(mu_);
+    scheduling_delay_time_ += delta;
+#endif
   }
 
   NodeExecStatsInterface* CreateNodeExecStats(const NodeDef* node) override {
@@ -66,6 +78,15 @@ class SimpleStepStatsCollector : public StepStatsCollectorInterface {
     return processing_time_;
   }
 
+  int64 scheduling_delay_time() {
+#ifndef LIGHTWEIGHT_METRICS
+    tf_shared_lock l(mu_);
+    return scheduling_delay_time_;
+#else
+    return 0;
+#endif
+  }
+
  private:
   class SimpleNodeExecStats : public NodeExecStatsInterface {
    public:
@@ -73,8 +94,15 @@ class SimpleStepStatsCollector : public StepStatsCollectorInterface {
         : step_stats_collector_(step_stats_collector) {}
 
     void Done(const string& device) override {
-      step_stats_collector_->IncrementProcessingTime(end_time_ns_ -
-                                                     start_time_ns_);
+#ifndef LIGHTWEIGHT_METRICS
+      const auto scheduling_delay_ns = start_time_ns_ - sched_time_ns_;
+#endif
+      const auto elapsed_time = end_time_ns_ - start_time_ns_;
+      step_stats_collector_->IncrementProcessingTime(elapsed_time);
+#ifndef LIGHTWEIGHT_METRICS
+      step_stats_collector_->IncrementSchedulingDelayTime(
+          scheduling_delay_ns);
+#endif
       delete this;
     }
 
@@ -96,9 +124,16 @@ class SimpleStepStatsCollector : public StepStatsCollectorInterface {
 
     void SetOutput(int slot, const Tensor* tensor) override {}
 
-    void SetScheduled(int64_t nanos) override {}
+    void SetScheduled(int64_t nanos) override {
+#ifndef LIGHTWEIGHT_METRICS
+      sched_time_ns_ = absl::GetCurrentTimeNanos();
+#endif
+    }
 
    private:
+#ifndef LIGHTWEIGHT_METRICS
+    int64 sched_time_ns_ = 0;
+#endif
     int64 start_time_ns_ = 0;
     int64 end_time_ns_ = 0;
     SimpleStepStatsCollector* step_stats_collector_;  // Not owned.
@@ -106,6 +141,9 @@ class SimpleStepStatsCollector : public StepStatsCollectorInterface {
 
   mutex mu_;
   int64 processing_time_ TF_GUARDED_BY(mu_) = 0;
+#ifndef LIGHTWEIGHT_METRICS
+  int64 scheduling_delay_time_ TF_GUARDED_BY(mu_) = 0;
+#endif
 };
 
 Status GetCapturedInput(const CapturedFunction* const func, int index,
@@ -501,7 +539,9 @@ Status CapturedFunction::AddToGraph(
   other_arguments_types->reserve(captured_inputs_.size());
   for (const Tensor& t : captured_inputs_) {
     Node* node;
-    if (ctx->serialize_data_tensors()) {
+    if (ctx->serialize_data_tensors()
+        && !ctx->no_serialize_udf_data_tensors()) {
+      // NOTE(mkuchnik): We don't attempt to serialize UDFs if this flag is set
       TF_RETURN_IF_ERROR(b->AddDatasetOrTensor(ctx, t, &node));
     } else {
       TF_RETURN_IF_ERROR(b->AddPlaceholder(t, &node));
@@ -800,6 +840,31 @@ Status InstantiatedCapturedFunction::Run(
       node && ctx->model() && ctx->model()->collect_resource_usage();
   f_opts.stats_collector = stats_collector.get();
 
+  // TODO(mkuchnik): Refactor out common code
+  TRunner traced_runner = TRunner(std::bind(
+        [](
+          // Note: `runner` is a const reference to avoid copying it.
+          const std::function<void(std::function<void()>)>& ctx_runner,
+          const std::shared_ptr<model::Node>& node,
+          std::function<void()> fn) {
+        std::function<void()> wrapped_fn = std::bind(
+            [](const std::shared_ptr<model::Node>& node,
+               const std::function<void()>& fn) {
+            auto t1 = ThreadExecutionTime::NowNanos();
+            fn();
+            auto t2 = ThreadExecutionTime::NowNanos();
+            node->add_CPU_processing_time(t2 - t1);
+            },
+            std::move(node),
+            std::move(fn));
+        ctx_runner(std::move(wrapped_fn));
+        },
+        *ctx->runner(), node, std::placeholders::_1));
+
+  if (model::CPU_based_metrics && collect_usage && !node->is_cheap()) {
+    f_opts.runner = &traced_runner;  // sync execution so nested lifetime
+  }
+
   OwnedArgsCallFrame frame(std::move(args), &captured_func_->captured_inputs(),
                            ret_types_);
   profiler::TraceMe activity(
@@ -823,6 +888,10 @@ Status InstantiatedCapturedFunction::Run(
           node->num_elements());
     }
     node->add_processing_time(stats_collector->processing_time());
+    // NOTE(mkuchnik): CPU processing time pushed to `traced_runner`
+#ifndef LIGHTWEIGHT_METRICS
+    node->add_scheduling_delay_time(stats_collector->scheduling_delay_time());
+#endif
     if (collect_usage) node->record_start(EnvTime::NowNanos());
   } else {
     TF_RETURN_IF_ERROR(lib_->RunSync(std::move(f_opts), f_handle_, &frame));
@@ -863,6 +932,31 @@ Status InstantiatedCapturedFunction::RunWithBorrowedArgs(
       node && ctx->model() && ctx->model()->collect_resource_usage();
   f_opts.stats_collector = stats_collector.get();
 
+  // TODO(mkuchnik): Refactor out common code
+  TRunner traced_runner = TRunner(std::bind(
+        [](
+          // Note: `runner` is a const reference to avoid copying it.
+          const std::function<void(std::function<void()>)>& ctx_runner,
+          const std::shared_ptr<model::Node>& node,
+          std::function<void()> fn) {
+        std::function<void()> wrapped_fn = std::bind(
+            [](const std::shared_ptr<model::Node>& node,
+               const std::function<void()>& fn) {
+            auto t1 = ThreadExecutionTime::NowNanos();
+            fn();
+            auto t2 = ThreadExecutionTime::NowNanos();
+            node->add_CPU_processing_time(t2 - t1);
+            },
+            std::move(node),
+            std::move(fn));
+        ctx_runner(std::move(wrapped_fn));
+        },
+        *ctx->runner(), node, std::placeholders::_1));
+
+  if (model::CPU_based_metrics && collect_usage && !node->is_cheap()) {
+    f_opts.runner = &traced_runner;  // sync execution so nested lifetime
+  }
+
   BorrowedArgsCallFrame frame(args, &captured_func_->captured_inputs(),
                               ret_types_);
   profiler::TraceMe activity(
@@ -885,6 +979,10 @@ Status InstantiatedCapturedFunction::RunWithBorrowedArgs(
           node->num_elements());
     }
     node->add_processing_time(stats_collector->processing_time());
+    // NOTE(mkuchnik): CPU processing time pushed to `traced_runner`
+#ifndef LIGHTWEIGHT_METRICS
+    node->add_scheduling_delay_time(stats_collector->scheduling_delay_time());
+#endif
     if (collect_usage) node->record_start(EnvTime::NowNanos());
   } else {
     TF_RETURN_IF_ERROR(lib_->RunSync(std::move(f_opts), f_handle_, &frame));
@@ -966,17 +1064,44 @@ void InstantiatedCapturedFunction::RunAsync(
       node && ctx->model() && ctx->model()->collect_resource_usage();
   f_opts.stats_collector = stats_collector.get();
 
+  TRunner* traced_runner(nullptr);
+  if (model::CPU_based_metrics && collect_usage && !node->is_cheap()) {
+    traced_runner = new TRunner(std::bind(
+          [](
+              // Note: `runner` is a const reference to avoid copying it.
+              const std::function<void(std::function<void()>)>& ctx_runner,
+              const std::shared_ptr<model::Node>& node,
+              std::function<void()> fn) {
+            std::function<void()> wrapped_fn = std::bind(
+                [](const std::shared_ptr<model::Node>& node,
+                   const std::function<void()>& fn) {
+                auto t1 = ThreadExecutionTime::NowNanos();
+                fn();
+                auto t2 = ThreadExecutionTime::NowNanos();
+                node->add_CPU_processing_time(t2 - t1);
+                },
+                std::move(node),
+                std::move(fn));
+            ctx_runner(std::move(wrapped_fn));
+          },
+          *ctx->runner(), node, std::placeholders::_1));
+    f_opts.runner = traced_runner;
+  }
+
   // Transfer ownership of the cancellation manager to `callback`.
   CancellationManager* raw_cancellation_manager =
       cancellation_manager.release();
   auto callback = std::bind(
       [this, rets, step_container, raw_cancellation_manager, frame, node,
-       collect_usage](
+       collect_usage, traced_runner](
           const FunctionLibraryRuntime::DoneCallback& done,
           IteratorContext* ctx,
           const std::shared_ptr<SimpleStepStatsCollector>& stats_collector,
           // Begin unbound arguments.
           Status s) {
+        if (traced_runner) {
+          delete traced_runner;
+        }
         delete step_container;
         delete raw_cancellation_manager;
         if (s.ok()) {
@@ -997,6 +1122,11 @@ void InstantiatedCapturedFunction::RunAsync(
                 node->num_elements());
           }
           node->add_processing_time(stats_collector->processing_time());
+          // NOTE(mkuchnik): CPU processing time pushed to `traced_runner`
+#ifndef LIGHTWEIGHT_METRICS
+          node->add_scheduling_delay_time(
+              stats_collector->scheduling_delay_time());
+#endif
         }
         if (collect_usage) {
           node->record_start(EnvTime::NowNanos());

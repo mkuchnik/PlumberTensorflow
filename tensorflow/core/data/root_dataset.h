@@ -28,11 +28,17 @@ class RootDataset : public DatasetBase {
  public:
   struct Params {
     bool autotune = true;
+    bool force_modeling = false;
+    bool stats_dumping = false;
     model::AutotuneAlgorithm autotune_algorithm;
     int64 autotune_cpu_budget = 0;
     int64 autotune_ram_budget = 0;
     int64 max_intra_op_parallelism = 1;
     int64 private_threadpool_size = 0;
+    std::string stats_filename;
+    int64 stats_dump_period = 0;
+    int64 span_collection_interval = 0;
+    GraphDef graphdef;
   };
 
   static Status FromOptions(DatasetBase* input, DatasetBase** output);

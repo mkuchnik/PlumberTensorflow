@@ -784,6 +784,7 @@ class CacheDatasetOp::MemoryDatasetBase : public DatasetBase {
         if (*end_of_sequence) {
           if (!cache_->IsCompleted()) {
             VLOG(2) << "Finalizing the cache because EOF has been reached.";
+            RecordMiscBuffer(ctx, temp_cache_.size());
             cache_->Complete(std::move(temp_cache_));
           }
           return Status::OK();
@@ -793,6 +794,7 @@ class CacheDatasetOp::MemoryDatasetBase : public DatasetBase {
         if (temp_cache_.size() == dataset()->input_->Cardinality()) {
           VLOG(2) << "Finalizing the cache because its size matches the "
                      "expected input cardinality.";
+          RecordMiscBuffer(ctx, temp_cache_.size());
           cache_->Complete(std::move(temp_cache_));
         }
         return Status::OK();

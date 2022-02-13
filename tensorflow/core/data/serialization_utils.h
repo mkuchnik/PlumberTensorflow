@@ -134,6 +134,17 @@ Status AsGraphDefMinimal(OpKernelContext* ctx, const DatasetBase* input,
                          std::vector<std::pair<string, Tensor>>* input_list,
                          GraphDef* result, string* dataset_node);
 
+// Returns a GraphDef representation of the given dataset using the minimal
+// serialization parameters (i.e. ignoring external state,
+// not failing if there are datasets which do not have AsGraphDef
+// implemented). However, data tensors are serialized with random seeds.
+// Sets the `dataset_node` parameter to the dataset's node name in the
+// resulting GraphDef.
+Status AsGraphDefMinimalWithInstantiableDataTensors(
+    OpKernelContext* ctx, const DatasetBase* input,
+    std::vector<std::pair<string, Tensor>>* input_list,
+    GraphDef* result, string* dataset_node);
+
 }  // namespace data
 }  // namespace tensorflow
 

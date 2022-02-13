@@ -90,6 +90,25 @@ TEST_F(DefaultEnvTest, IncompleteReadOutOfRange) {
   EXPECT_EQ(input, result);
 }
 
+TEST_F(DefaultEnvTest, IncompleteReadOutOfRangeOptions) {
+  const string filename = io::JoinPath(BaseDir(), "out_of_range_options");
+  const string input = CreateTestFile(env_, filename, 2);
+  std::unique_ptr<RandomAccessFile> f;
+  FileOptions options;
+  options.hint_no_cache = true;
+  TF_EXPECT_OK(env_->NewRandomAccessFile(filename, &f, options));
+
+  // Reading past EOF should give an OUT_OF_RANGE error
+  StringPiece result;
+  char scratch[3];
+  EXPECT_EQ(error::OUT_OF_RANGE, f->Read(0, 3, &result, scratch).code());
+  EXPECT_EQ(input, result);
+
+  // Exact read to EOF works.
+  TF_EXPECT_OK(f->Read(0, 2, &result, scratch));
+  EXPECT_EQ(input, result);
+}
+
 TEST_F(DefaultEnvTest, ReadFileToString) {
   for (const int length : {0, 1, 1212, 2553, 4928, 8196, 9000, (1 << 20) - 1,
                            1 << 20, (1 << 20) + 1, (256 << 20) + 100}) {

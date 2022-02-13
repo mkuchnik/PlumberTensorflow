@@ -106,7 +106,9 @@ class TextLineDatasetOp::Dataset : public DatasetBase {
         if (buffered_input_stream_) {
           Tensor line_contents(tstring{});
           tstring& line_contents_str = line_contents.scalar<tstring>()();
+          RecordStartWait(ctx);
           Status s = buffered_input_stream_->ReadLine(&line_contents_str);
+          RecordStopWait(ctx);
 
           if (s.ok()) {
             // Produce the line as output.
@@ -114,6 +116,8 @@ class TextLineDatasetOp::Dataset : public DatasetBase {
                 metrics::GetTFDataBytesReadCounter(
                     name_utils::OpName(TextLineDatasetOp::kDatasetType));
             bytes_counter->IncrementBy(line_contents_str.size());
+            total_bytes_read_ += line_contents_str.size();
+            RecordDiskBytesRead(ctx, line_contents_str.size());
             out_tensors->push_back(std::move(line_contents));
             *end_of_sequence = false;
             return Status::OK();
@@ -123,7 +127,13 @@ class TextLineDatasetOp::Dataset : public DatasetBase {
           }
           // We have reached the end of the current file, so maybe
           // move on to next file.
+          RecordFileRead(ctx,
+              dataset()->filenames_[current_file_index_],
+              total_bytes_read_);
+          total_bytes_read_ = 0;
+          RecordStartWait(ctx);
           ResetStreamsLocked();
+          RecordStopWait(ctx);
           ++current_file_index_;
         }
 
@@ -133,7 +143,9 @@ class TextLineDatasetOp::Dataset : public DatasetBase {
           return Status::OK();
         }
 
+        RecordStartWait(ctx);
         TF_RETURN_IF_ERROR(SetupStreamsLocked(ctx->env()));
+        RecordStopWait(ctx);
       } while (true);
     }
 
@@ -223,6 +235,7 @@ class TextLineDatasetOp::Dataset : public DatasetBase {
     std::unique_ptr<io::BufferedInputStream> buffered_input_stream_
         TF_GUARDED_BY(mu_);
     size_t current_file_index_ TF_GUARDED_BY(mu_) = 0;
+    int64 total_bytes_read_ TF_GUARDED_BY(mu_) = 0;
     std::unique_ptr<RandomAccessFile> file_
         TF_GUARDED_BY(mu_);  // must outlive input_stream_
   };

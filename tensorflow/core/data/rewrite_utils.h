@@ -52,6 +52,12 @@ Status RewriteDataset(OpKernelContext* ctx, const DatasetBase* input,
                       std::function<RewriterConfig(void)> config_factory,
                       bool record_fingerprint, DatasetBase** rewritten_input);
 
+// Rewrites the input dataset using the given config.
+Status RewriteDataset(OpKernelContext* ctx, const DatasetBase* input,
+                      std::function<RewriterConfig(void)> config_factory,
+                      bool record_fingerprint, DatasetBase** rewritten_input,
+                      GraphDef* output_graph_def);
+
 // Creates a grappler item for `graph_def`, which is required for graph
 // optimization.
 // `dataset_node` is the name of the node corresponding to the dataset.

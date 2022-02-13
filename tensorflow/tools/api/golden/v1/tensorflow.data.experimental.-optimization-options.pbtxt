@@ -24,6 +24,18 @@ tf_class {
     mtype: "<type \'property\'>"
   }
   member {
+    name: "autotune_span_collection_interval"
+    mtype: "<type \'property\'>"
+  }
+  member {
+    name: "autotune_stats_dump_period"
+    mtype: "<type \'property\'>"
+  }
+  member {
+    name: "autotune_stats_filename"
+    mtype: "<type \'property\'>"
+  }
+  member {
     name: "filter_fusion"
     mtype: "<type \'property\'>"
   }

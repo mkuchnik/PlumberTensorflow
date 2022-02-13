@@ -1038,7 +1038,7 @@ void FillAndCopyVarLen(
 
 // Thin vector like interface wrapper around a Tensor. This enable us to
 // directly populate a tensor during parsing instead of having to first create a
-// vactor and then copy the data over.
+// vector and then copy the data over.
 template <typename T>
 class TensorVector {
  public:

@@ -52,7 +52,8 @@ class OptimizeDatasetOp : public UnaryDatasetOpKernel {
       const absl::flat_hash_set<tstring>& optimizations_disabled,
       const absl::flat_hash_set<tstring>& optimizations_default,
       const absl::flat_hash_set<tstring>& optimization_configs,
-      DatasetBase** output);
+      DatasetBase** output,
+      GraphDef* output_graph_def);
 
   explicit OptimizeDatasetOp(OpKernelConstruction* ctx);
 
@@ -82,6 +83,7 @@ class OptimizeDatasetOp : public UnaryDatasetOpKernel {
       const absl::flat_hash_set<tstring>& optimizations_default,
       const absl::flat_hash_set<tstring>& optimization_configs,
       DatasetBase** output);
+      // TODO(mkuchnik): Add output_graph_def
 
   explicit OptimizeDatasetOp(OpKernelConstruction* ctx);
 

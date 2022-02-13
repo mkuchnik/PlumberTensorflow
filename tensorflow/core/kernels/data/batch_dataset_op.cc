@@ -151,6 +151,7 @@ class BatchDatasetOp::Dataset : public DatasetBase {
         : DatasetIterator<Dataset>(params) {}
 
     Status Initialize(IteratorContext* ctx) override {
+      RecordMiscBuffer(ctx, dataset()->reserve_size_);
       return dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_);
     }
 
@@ -172,6 +173,7 @@ class BatchDatasetOp::Dataset : public DatasetBase {
           std::vector<Tensor> batch_element_tuple;
           TF_RETURN_IF_ERROR(
               input_impl_->GetNext(ctx, &batch_element_tuple, end_of_sequence));
+          RecordIndirectBufferElement(ctx, batch_element_tuple);
           if (!*end_of_sequence) {
             batch_elements.emplace_back(std::move(batch_element_tuple));
           } else {

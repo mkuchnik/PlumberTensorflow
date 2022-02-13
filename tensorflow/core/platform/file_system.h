@@ -50,6 +50,18 @@ struct TransactionToken {
   void* token;
 };
 
+// Options similar to POSIX open options (e.g., O_DIRECT). Since we do not
+// necessarily know the underlying filesystem implementation, these are treated
+// as hints.
+struct FileOptions {
+  // if caching should be avoided (e.g., page cache)
+  //
+  // NOTE(mkuchnik): O_DIRECT/DIRECT_IO may be used, which requires aligned
+  // buffers and bypasses the buffer cache. There is a possibility for read
+  // after write consistency issues. Use only for read benchmarking.
+  bool hint_no_cache = false;
+};
+
 /// A generic interface for accessing a file system.  Implementations
 /// of custom filesystem adapters must implement this interface,
 /// RandomAccessFile, WritableFile, and ReadOnlyMemoryRegion classes.
@@ -73,11 +85,26 @@ class FileSystem {
   }
 
   virtual tensorflow::Status NewRandomAccessFile(
+      const std::string& fname, std::unique_ptr<RandomAccessFile>* result,
+      const FileOptions& options) {
+    return NewRandomAccessFile(fname, nullptr, result, options);
+  }
+
+  virtual tensorflow::Status NewRandomAccessFile(
       const std::string& fname, TransactionToken* token,
       std::unique_ptr<RandomAccessFile>* result) {
     // We duplicate these methods due to Google internal coding style prevents
     // virtual functions with default arguments. See PR #41615.
     return Status::OK();
+  }
+
+  virtual tensorflow::Status NewRandomAccessFile(
+      const std::string& fname, TransactionToken* token,
+      std::unique_ptr<RandomAccessFile>* result,
+      const FileOptions& options) {
+    // Note(mkuchnik): By default, options are a suggestion and forwards to a
+    // normal file open
+    return NewRandomAccessFile(fname, token, result);
   }
 
   /// \brief Creates an object that writes to a new file with the specified

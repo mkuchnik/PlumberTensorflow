@@ -163,6 +163,7 @@ class PrefetchDatasetOp::Dataset : public DatasetBase {
           &deregister_fn_));
       IteratorContext::Params params(ctx);
       params.cancellation_manager = cancellation_manager_.get();
+      RecordMiscBuffer(ctx, buffer_limit());
       return dataset()->input_->MakeIterator(IteratorContext(params), this,
                                              prefix(), &input_impl_);
     }
@@ -221,6 +222,7 @@ class PrefetchDatasetOp::Dataset : public DatasetBase {
               stats_utils::BufferCapacityScalarName(dataset()->node_name()),
               static_cast<float>(buffer_limit()), num_elements());
         }
+        RecordMiscBuffer(ctx, buffer_limit());
         // Release mu_
       }
       return input_impl_->GetNext(ctx, out_tensors, end_of_sequence);
@@ -454,6 +456,7 @@ class PrefetchDatasetOp::Dataset : public DatasetBase {
       auto cleanup = gtl::MakeCleanup([this, ctx] { RecordStop(ctx.get()); });
       // Keep track of where we are in an iteration "burst"
       int num_produced = 0;
+      RecordMiscBuffer(ctx.get(), buffer_limit());
       while (true) {
         // 1. Wait for a slot in the buffer.
         {

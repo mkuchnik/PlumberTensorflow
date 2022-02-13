@@ -71,6 +71,7 @@ void AutoShardDatasetOp::MakeDataset(OpKernelContext* ctx, DatasetBase* input,
   // FlatMapDataset, InterleaveDataset etc. So we disable generalized
   // function optimization and explicitly handle function modifications
   // for those datasets in the rewrite.
+  VLOG(0) << "Lost output dataset";
   OP_REQUIRES_OK(ctx, RewriteDataset(ctx, input, std::move(config_factory),
                                      /*record_fingerprint=*/false, output));
 }

@@ -112,6 +112,10 @@ class ParallelMapDatasetOp::Dataset : public DatasetBase {
                                           params);
   }
 
+  int64 Parallelism() const override {
+    return num_parallel_calls_;
+  }
+
   int64 Cardinality() const override {
     if (preserve_cardinality_) {
       return input_->Cardinality();
@@ -399,11 +403,20 @@ class ParallelMapDatasetOp::Dataset : public DatasetBase {
         runner_thread_ = ctx->StartThread(
             "tf_data_parallel_map",
             std::bind(&Iterator::RunnerThread, this, ctx_copy));
+#ifndef LIGHTWEIGHT_METRICS
+        if (ctx->stats_aggregator() || ctx->model()) {
+#else
         if (ctx->stats_aggregator()) {
+#endif
           stats_thread_ = ctx->StartThread(
               "tf_data_parallel_map_stats",
               std::bind(&Iterator::StatsThread, this, ctx_copy));
         }
+#ifndef LIGHTWEIGHT_METRICS
+        if (dataset()->captured_func_->use_inter_op_parallelism()) {
+          RecordInterOpParallelism(ctx);
+        }
+#endif
       }
     }
 
@@ -592,11 +605,16 @@ class ParallelMapDatasetOp::Dataset : public DatasetBase {
           // Avoid division by zero.
           num_parallel_calls = 1;
         }
-        ctx->stats_aggregator()->AddScalar(
-            stats_utils::ThreadUtilizationScalarName(dataset()->node_name()),
-            static_cast<float>(num_calls) /
-                static_cast<float>(num_parallel_calls),
-            step);
+#ifndef LIGHTWEIGHT_METRICS
+        RecordNumActiveThreads(ctx.get(), num_calls);
+#endif
+        if (ctx->stats_aggregator()) {
+          ctx->stats_aggregator()->AddScalar(
+              stats_utils::ThreadUtilizationScalarName(dataset()->node_name()),
+              static_cast<float>(num_calls) /
+                  static_cast<float>(num_parallel_calls),
+              step);
+        }
       }
     }
 

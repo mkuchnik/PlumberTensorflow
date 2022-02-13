@@ -439,6 +439,33 @@ Status AsGraphDefMinimal(OpKernelContext* ctx, const DatasetBase* input,
   return Status::OK();
 }
 
+Status AsGraphDefMinimalWithInstantiableDataTensors(
+    OpKernelContext* ctx, const DatasetBase* input,
+    std::vector<std::pair<string, Tensor>>* input_list,
+    GraphDef* result, string* dataset_node) {
+  SerializationContext::Params params;
+  params.resource_mgr = ctx->resource_manager();
+  params.input_list = input_list;
+  params.external_state_policy =
+      SerializationContext::ExternalStatePolicy::kIgnore;
+  params.fail_if_unimplemented = false;
+  params.serialize_data_tensors = true;
+  // Don't serialize UDFs because they can contain DT_RESOURCE
+  params.no_serialize_udf_data_tensors = true;
+  params.preserve_random_seeds = false;
+  SerializationContext serialization_ctx(params);
+  TF_RETURN_IF_ERROR(
+      AsGraphDef(ctx, input, std::move(serialization_ctx), result));
+
+  // Symbolic `_Retval` node indicates which node corresponds to the dataset.
+  for (const auto& node : result->node()) {
+    if (node.op() == "_Retval") {
+      *dataset_node = node.input(0);
+    }
+  }
+  return Status::OK();
+}
+
 Status AsGraphDef(OpKernelContext* ctx, const DatasetBase* dataset,
                   SerializationContext&& serialization_ctx,
                   GraphDef* graph_def) {

@@ -123,6 +123,11 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
     return name_utils::DatasetDebugString(kDatasetType);
   }
 
+  int64 Parallelism() const override {
+    // TODO(mkuchnik): Track autotuning value
+    return num_parallel_calls_;
+  }
+
   int64 Cardinality() const override {
     if (!preserve_cardinality_) {
       return kUnknownCardinality;
@@ -384,6 +389,9 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
       mutex_lock l(*mu_);
       num_calls_--;
       result->num_calls--;
+#ifndef LIGHTWEIGHT_METRICS
+      RecordNumActiveThreads(ctx.get(), num_calls_);
+#endif
       const auto& stats_aggregator = ctx->stats_aggregator();
       if (stats_aggregator) {
         stats_aggregator->AddScalar(
@@ -497,6 +505,11 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
         runner_thread_ = ctx->StartThread(
             kTFDataMapAndBatch,
             std::bind(&Iterator::RunnerThread, this, ctx_copy));
+#ifndef LIGHTWEIGHT_METRICS
+        if (dataset()->captured_func_->use_inter_op_parallelism()) {
+          RecordInterOpParallelism(ctx);
+        }
+#endif
       }
     }
 
@@ -577,6 +590,9 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
             num_calls_++;
           }
         }
+#ifndef LIGHTWEIGHT_METRICS
+        RecordNumActiveThreads(ctx.get(), num_calls_);
+#endif
         const auto& stats_aggregator = ctx->stats_aggregator();
         if (stats_aggregator) {
           mutex_lock l(*mu_);
@@ -696,6 +712,7 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
   const bool preserve_cardinality_;
   const TraceMeMetadata traceme_metadata_;
 };
+
 
 MapAndBatchDatasetOp::MapAndBatchDatasetOp(OpKernelConstruction* ctx)
     : UnaryDatasetOpKernel(ctx) {

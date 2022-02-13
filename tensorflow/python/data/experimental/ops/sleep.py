@@ -19,6 +19,7 @@ from __future__ import print_function
 
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.ops import gen_experimental_dataset_ops
+from tensorflow.python.util.tf_export import tf_export
 
 
 class _SleepDataset(dataset_ops.UnaryUnchangedStructureDataset):
@@ -33,7 +34,7 @@ class _SleepDataset(dataset_ops.UnaryUnchangedStructureDataset):
         **self._flat_structure)
     super(_SleepDataset, self).__init__(input_dataset, variant_tensor)
 
-
+@tf_export("data.experimental.sleep")
 def sleep(sleep_microseconds):
   """Sleeps for `sleep_microseconds` before producing each input element.
 

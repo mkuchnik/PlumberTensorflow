@@ -189,6 +189,14 @@ Status Env::NewRandomAccessFile(const string& fname,
   return fs->NewRandomAccessFile(fname, result);
 }
 
+Status Env::NewRandomAccessFile(const string& fname,
+                                std::unique_ptr<RandomAccessFile>* result,
+                                const FileOptions& options) {
+  FileSystem* fs;
+  TF_RETURN_IF_ERROR(GetFileSystemForFile(fname, &fs));
+  return fs->NewRandomAccessFile(fname, result, options);
+}
+
 Status Env::NewReadOnlyMemoryRegionFromFile(
     const string& fname, std::unique_ptr<ReadOnlyMemoryRegion>* result) {
   FileSystem* fs;

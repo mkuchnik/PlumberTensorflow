@@ -53,7 +53,8 @@ namespace {
 void MakeDatasetHelper(OpKernelContext* ctx,
                        absl::flat_hash_set<tstring>& optimizations,
                        const absl::flat_hash_set<tstring>& optimization_configs,
-                       DatasetBase* input, DatasetBase** output) {
+                       DatasetBase* input, DatasetBase** output,
+                       GraphDef* output_graph_def) {
   // The vector stores the graduated experiment names which will be turned on
   // for all input pipelines.
   // clang-format off
@@ -82,7 +83,8 @@ void MakeDatasetHelper(OpKernelContext* ctx,
     return CreateRewriterConfig(optimizations, optimization_configs);
   };
   Status s = RewriteDataset(ctx, input, std::move(config_factory),
-                            /*record_fingerprint=*/true, output);
+                            /*record_fingerprint=*/true, output,
+                            output_graph_def);
   if (errors::IsDeadlineExceeded(s)) {
     // Ignore DeadlineExceeded as it implies that the attempted rewrite took too
     // long which should not prevent further computation.
@@ -104,13 +106,15 @@ void OptimizeDatasetOp::MakeDatasetFromOptions(
     const absl::flat_hash_set<tstring>& optimizations_disabled,
     const absl::flat_hash_set<tstring>& optimizations_default,
     const absl::flat_hash_set<tstring>& optimization_configs,
-    DatasetBase** output) {
+    DatasetBase** output,
+    GraphDef* output_graph_def) {
   auto experiments = GetExperiments();
   LogAndRecordExperiments(experiments);
   auto optimizations =
       SelectOptimizations(experiments, optimizations_enabled,
                           optimizations_disabled, optimizations_default);
-  MakeDatasetHelper(ctx, optimizations, optimization_configs, input, output);
+  MakeDatasetHelper(ctx, optimizations, optimization_configs, input, output,
+                    output_graph_def);
 }
 
 OptimizeDatasetOp::OptimizeDatasetOp(OpKernelConstruction* ctx)
@@ -155,10 +159,13 @@ void OptimizeDatasetOp::MakeDataset(OpKernelContext* ctx, DatasetBase* input,
         {optimizations_disabled.begin(), optimizations_disabled.end()},
         {optimizations_default.begin(), optimizations_default.end()});
   }
+
+  // TODO(mkuchnik): Handle saving graphdef
+  VLOG(0) << "Make dataset lost graphdef!";
   MakeDatasetHelper(
       ctx, optimizations,
       {optimization_configs_.begin(), optimization_configs_.end()}, input,
-      output);
+      output, /*output_graph_def=*/nullptr);
 }
 
 namespace {

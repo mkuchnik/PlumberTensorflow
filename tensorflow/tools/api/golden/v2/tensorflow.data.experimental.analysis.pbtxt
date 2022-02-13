@@ -1,0 +1,15 @@
+path: "tensorflow.data.experimental.analysis"
+tf_module {
+  member {
+    name: "PlumberPerformanceModel"
+    mtype: "<type \'type\'>"
+  }
+  member {
+    name: "RestructuredDataset"
+    mtype: "<type \'type\'>"
+  }
+  member {
+    name: "ResumeDataset"
+    mtype: "<type \'type\'>"
+  }
+}

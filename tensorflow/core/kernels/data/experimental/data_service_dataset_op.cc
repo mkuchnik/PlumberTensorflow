@@ -310,6 +310,8 @@ class DataServiceDatasetOp::Dataset : public DatasetBase {
       while (skip) {
         while ((results_.empty() || !results_.front().ready) && !Finished() &&
                !cancelled_ && status_.ok()) {
+          RecordStartWait(ctx);
+          // TODO(mkuchnik): Stop record altogether?
           VLOG(3) << "Blocking in GetNext. results_.size():" << results_.size()
                   << " results_.front().ready:"
                   << (!results_.empty() && results_.front().ready)
@@ -319,6 +321,7 @@ class DataServiceDatasetOp::Dataset : public DatasetBase {
                   << " num_running_worker_threads_:"
                   << num_running_worker_threads_;
           get_next_cv_.wait(l);
+          RecordStopWait(ctx);
         }
         if (cancelled_) {
           VLOG(3) << "Returning from GetNext due to cancellation";
@@ -342,6 +345,11 @@ class DataServiceDatasetOp::Dataset : public DatasetBase {
       auto& result = results_.front();
       *end_of_sequence = result.end_of_sequence;
       if (!*end_of_sequence) {
+        // TODO(mkuchnik): This is a loose approximation. Need to push into
+        // iterators to get tighter bounds (e.g., measure at read).
+        const auto bytes_read =
+            result.element.back().scalar<tstring>()().size();
+        RecordNetworkBytesRead(ctx, bytes_read);
         out_tensors->swap(result.element);
         if (StrictRoundRobin()) {
           VLOG(1) << "Consumer " << dataset()->consumer_index_.value()

@@ -20,6 +20,8 @@ package(
 
 # Export files for use on Android.
 exports_files([
+    "analysis_utils.cc",
+    "analysis_utils.h",
     "captured_function.cc",
     "captured_function.h",
     "dataset_utils.cc",
@@ -141,6 +143,20 @@ cc_library(
         "//tensorflow/core/platform:regexp",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
+    ],
+)
+
+cc_library(
+    name = "analysis_utils",
+    srcs = ["analysis_utils.cc"],
+    hdrs = ["analysis_utils.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tensorflow/core:core_cpu_internal",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:lib_internal",
+        "//tensorflow/core:protos_all_cc",
     ],
 )
 
@@ -271,6 +287,7 @@ cc_library(
     srcs = ["root_dataset.cc"],
     hdrs = ["root_dataset.h"],
     deps = [
+        ":analysis_utils",
         ":dataset_utils",
         ":name_utils",
         ":rewrite_utils",

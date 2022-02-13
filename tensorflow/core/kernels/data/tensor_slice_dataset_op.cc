@@ -137,6 +137,10 @@ class TensorSliceDatasetOp::Dataset : public DatasetBase {
       int64_t index = split.scalar<int64>()();
       out_tensors->clear();
       out_tensors->reserve(dataset()->tensors_.size());
+      RecordIndirectBufferElement(ctx,
+                                  dataset()->tensors_);
+      RecordMiscBuffer(ctx,
+                       dataset()->tensors_.size());
       for (size_t i = 0; i < dataset()->tensors_.size(); ++i) {
         Tensor slice = dataset()->tensors_[i].SubSlice(index);
         if (slice.IsAligned()) {

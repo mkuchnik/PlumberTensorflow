@@ -171,8 +171,8 @@ class InterleaveMany : public Node {
  protected:
   std::shared_ptr<Node> Clone(std::shared_ptr<Node> output) const override
       TF_SHARED_LOCKS_REQUIRED(mu_) {
-    return std::make_shared<InterleaveMany>(
-        Args{id_, name_, std::move(output)});
+    return std::make_shared<InterleaveMany>(Args{
+        id_, name_, std::move(output), model_, dataset_name_, parallelism_, true});
   }
 
   void InputTimeLocked(NodeValues* input_times) const override
@@ -296,7 +296,9 @@ class AsyncInterleaveMany : public Node {
       parameters.push_back(pair.second);
     }
     return std::make_shared<AsyncInterleaveMany>(
-        Args{id_, name_, std::move(output)}, parameters);
+        Args{id_, name_, std::move(output), model_, dataset_name_,
+             parallelism_, true},
+        parameters);
   }
 
   void InputTimeLocked(NodeValues* input_times) const override
@@ -449,8 +451,10 @@ class KnownRatio : public Node {
  protected:
   std::shared_ptr<Node> Clone(std::shared_ptr<Node> output) const override
       TF_SHARED_LOCKS_REQUIRED(mu_) {
-    return std::make_shared<KnownRatio>(Args{id_, name_, std::move(output)},
-                                        ratio_);
+    return std::make_shared<KnownRatio>(
+        Args{id_, name_, std::move(output), model_, dataset_name_,
+             parallelism_, true},
+        ratio_);
   }
 
   // The input time is the sum of inherited input time and self processing time,
@@ -523,6 +527,10 @@ class KnownRatio : public Node {
         self_processing_time + inputs_processing_time;
   }
 
+  double ElementRatio() const override TF_SHARED_LOCKS_REQUIRED(mu_) {
+    return ratio_;
+  }
+
   Status ToProto(ModelProto::Node* node_proto) const {
     TF_RETURN_IF_ERROR(Node::ToProto(node_proto));
     node_proto->set_node_class(NodeClass::KNOWN_RATIO);
@@ -554,7 +562,9 @@ class AsyncKnownRatio : public Node {
       parameters.push_back(pair.second);
     }
     return std::make_shared<AsyncKnownRatio>(
-        Args{id_, name_, std::move(output)}, ratio_, memory_ratio_, parameters);
+        Args{id_, name_, std::move(output), model_, dataset_name_,
+             parallelism_, true},
+        ratio_, memory_ratio_, parameters);
   }
 
   // The input time is the sum of inherited input time and parallelism adjusted
@@ -723,6 +733,10 @@ class AsyncKnownRatio : public Node {
         self_processing_time + inputs_processing_time;
   }
 
+  double ElementRatio() const override TF_SHARED_LOCKS_REQUIRED(mu_) {
+    return ratio_;
+  }
+
   double MaximumBufferedBytes() const TF_SHARED_LOCKS_REQUIRED(mu_) {
     double result = 0;
     auto* parameter = gtl::FindOrNull(parameters_, kBufferSize);
@@ -775,7 +789,8 @@ class UnknownRatio : public Node {
  protected:
   std::shared_ptr<Node> Clone(std::shared_ptr<Node> output) const override
       TF_SHARED_LOCKS_REQUIRED(mu_) {
-    return std::make_shared<UnknownRatio>(Args{id_, name_, std::move(output)});
+    return std::make_shared<UnknownRatio>(Args{
+        id_, name_, std::move(output), model_, dataset_name_, parallelism_, true});
   }
 
   // The input time is the sum of inherited input time and self processing time,
@@ -879,7 +894,8 @@ class Unknown : public Node {
  protected:
   std::shared_ptr<Node> Clone(std::shared_ptr<Node> output) const override
       TF_SHARED_LOCKS_REQUIRED(mu_) {
-    return std::make_shared<Unknown>(Args{id_, name_, std::move(output)});
+    return std::make_shared<Unknown>(Args{id_, name_, std::move(output), model_,
+                                          dataset_name_, parallelism_, true});
   }
 
   // The input time is the inherited input time.
@@ -927,6 +943,9 @@ class Unknown : public Node {
 }  // namespace
 
 thread_local int64_t Node::work_start_;
+thread_local int64_t Node::work_start_wallclock_;
+thread_local int64_t Node::work_start_clock_;
+thread_local int64_t Node::work_start_wait_;
 
 std::shared_ptr<Parameter> MakeParameter(const string& name,
                                          std::shared_ptr<SharedState> state,
@@ -1152,6 +1171,8 @@ void Node::FlushMetrics() {
   metrics_.record_bytes_consumed(bytes_consumed_);
   metrics_.record_bytes_produced(bytes_produced_);
   metrics_.record_num_elements(num_elements_);
+  record_parallelism();
+  record_ratio();
 }
 
 double Node::OutputTime(Node::NodeValues* input_times,
@@ -1250,6 +1271,52 @@ double Node::TotalProcessingTime(Node::NodeValues* processing_times) {
   TotalProcessingTimeLocked(processing_times, &total_processing_times);
 
   return total_processing_times[long_name()];
+}
+
+void reduce_stats(
+    absl::flat_hash_map<string, std::shared_ptr<Node_Stats>>& production_stats,
+    const string& name_key, const Node_Stats& stats) {
+  // Add prior stats to new stats if exists, otherwise use new stats
+  // We ignore low production nodes, as they are ephemeral
+  const auto keep_threshold = 0;  // TODO(mkuchnik): This is hacky
+  auto pos = production_stats.find(name_key);
+  if (stats.elements_produced < keep_threshold) {
+    return;
+  }
+  if (pos != production_stats.end()) {
+    production_stats[name_key]->elements_produced += stats.elements_produced;
+    production_stats[name_key]->wallclock_time += stats.wallclock_time;
+    production_stats[name_key]->processing_time += stats.processing_time;
+    production_stats[name_key]->parallelism += stats.parallelism;
+    production_stats[name_key]->count += stats.count;
+    production_stats[name_key]->bytes_produced += stats.bytes_produced;
+    production_stats[name_key]->bytes_consumed += stats.bytes_consumed;
+    production_stats[name_key]->processing_time_clock +=
+        stats.processing_time_clock;
+#ifndef LIGHTWEIGHT_METRICS
+    production_stats[name_key]->scheduling_delay_time += // TODO(mkuchnik): remove
+        stats.scheduling_delay_time;
+#endif
+  } else {
+    production_stats[name_key] = std::make_shared<Node_Stats>(stats);
+  }
+}
+
+void Node::CollectProductionStats(
+    absl::flat_hash_map<string, std::shared_ptr<Node_Stats>>& production_stats,
+    int64 time_nanos) {
+  tf_shared_lock l(mu_);
+
+  for (const auto& node :
+       CollectNodes(TraversalOrder::REVERSE_BFS, IsAnyNode)) {
+    tf_shared_lock l(node->mu_);
+    const Node_Stats stats = node->Stats(time_nanos);
+    const string& name_key = node->dataset_name();
+    reduce_stats(production_stats, name_key, stats);
+  }
+  const Node_Stats stats = Stats(time_nanos);
+  const string& name_key = dataset_name();
+  reduce_stats(production_stats, name_key, stats);
 }
 
 double Node::AverageBufferedElementSize() const {
@@ -1404,6 +1471,8 @@ void Node::DebugStringHelper(absl::flat_hash_map<string, string>* debug_strings)
     const TF_SHARED_LOCKS_REQUIRED(mu_) {
   string result;
   strings::StrAppend(&result, long_name(), ":\n");
+  strings::StrAppend(&result, "  dataset=", dataset_name(), "\n");
+  strings::StrAppend(&result, "  parallelism=", parallelism_.load(), "\n");
   strings::StrAppend(&result, "  autotune=", autotune_.load(), "\n");
   strings::StrAppend(&result, "  buffered_bytes=", buffered_bytes_.load(),
                      "\n");
@@ -1415,6 +1484,17 @@ void Node::DebugStringHelper(absl::flat_hash_map<string, string>* debug_strings)
                      "\n");
   strings::StrAppend(&result, "  processing_time=", processing_time_.load(),
                      "\n");
+  strings::StrAppend(
+      &result, "  processing_time_wallclock=", processing_time_wallclock_.load(), "\n");
+  strings::StrAppend(
+      &result, "  processing_time_clock=", processing_time_clock_.load(), "\n");
+#ifndef LIGHTWEIGHT_METRICS
+  strings::StrAppend(
+      &result, "  scheduling_delay_time=", scheduling_delay_time_.load(), "\n");
+#endif
+  strings::StrAppend(&result, "  cardinality=",
+                     cardinality_.load(), "\n");
+  strings::StrAppend(&result, "  start_time=", start_time_.load(), "\n");
   strings::StrAppend(&result, "  num_elements=", num_elements_.load(), "\n");
   string inputs;
   for (auto& input : inputs_) {
@@ -1444,6 +1524,13 @@ std::shared_ptr<Node> Node::SnapshotHelper(
     cloned_current->num_elements_.store(num_elements_);
     cloned_current->record_metrics_.store(false);
     cloned_current->processing_time_.store(processing_time_);
+    cloned_current->processing_time_wallclock_.store(processing_time_wallclock_);
+    cloned_current->processing_time_clock_.store(processing_time_clock_);
+#ifndef LIGHTWEIGHT_METRICS
+    cloned_current->scheduling_delay_time_.store(scheduling_delay_time_);
+#endif
+    cloned_current->cardinality_.store(cardinality_);
+    cloned_current->start_time_.store(start_time_);
     mutex_lock l2(cloned_current->mu_);
     cloned_current->parameters_ = parameters_;
   }
@@ -1590,8 +1677,20 @@ Status Node::FromProto(ModelProto::Node node_proto,
 }
 
 Model::Model()
-    : collect_resource_usage_(false),
-      optimization_period_ms_(kOptimizationPeriodMinMs) {
+      : collect_resource_usage_(false),
+        collect_heavy_resource_usage_(false),
+        aggregate_system_metrics_(std::make_shared<AggregateSystemMetric>()),
+        optimization_period_ms_(kOptimizationPeriodMinMs) {
+  model_gauge_cell_ = metrics::GetTFDataModelGauge(
+      strings::StrCat(reinterpret_cast<uint64>(this)));
+  model_gauge_cell_->Set([&]() { return DebugString(); });
+}
+
+Model::Model(bool collect_resource_usage)
+      : collect_resource_usage_(collect_resource_usage),
+        collect_heavy_resource_usage_(false),
+        aggregate_system_metrics_(std::make_shared<AggregateSystemMetric>()),
+        optimization_period_ms_(kOptimizationPeriodMinMs) {
   model_gauge_cell_ = metrics::GetTFDataModelGauge(
       strings::StrCat(reinterpret_cast<uint64>(this)));
   model_gauge_cell_->Set([&]() { return DebugString(); });
@@ -1605,12 +1704,20 @@ Model::~Model() {
 
 void Model::AddNode(Node::Factory factory, const string& name,
                     std::shared_ptr<Node> parent,
-                    std::shared_ptr<Node>* out_node) {
+                    std::shared_ptr<Node>* out_node, const string& dataset_name,
+                    const int64 parallelism,
+                    const int64 cardinality) {
   // The name captures the sequence of iterators joined by `::`. We only use the
   // last element of the sequence as the name node.
   auto node_name = str_util::Split(name, ':', str_util::SkipEmpty()).back();
   mutex_lock l(mu_);
-  std::shared_ptr<Node> node = factory({id_counter_++, node_name, parent});
+  auto aggregate_metric = get_dataset_aggregate_metric(dataset_name);
+  std::shared_ptr<Node> node =
+      factory({id_counter_++, node_name, parent, this, dataset_name,
+               parallelism, cardinality, /*is_copy=*/false,
+               aggregate_metric});
+  node->record_parallelism(parallelism);
+  node->record_ratio();
   if (!output_) {
     output_ = node;
   }
@@ -1623,6 +1730,8 @@ void Model::AddNode(Node::Factory factory, const string& name,
   }
   collect_resource_usage_ =
       collect_resource_usage_ || node->has_tunable_parameters();
+  collect_heavy_resource_usage_ =
+      collect_heavy_resource_usage_ || node->has_tunable_parameters();
   *out_node = std::move(node);
   // TODO(jsimsa): Reset the optimization period when a node is added so that
   // autotuning adapts to changes to the input pipeline faster. Initial attempt
@@ -1836,6 +1945,32 @@ void Model::OptimizeGradientDescent(
   UpdateStateValues(&parameters);
 }
 
+absl::flat_hash_map<string, std::shared_ptr<Node_Stats>>
+Model::CollectProductionStats(int64 time_nanos) {
+  std::shared_ptr<Node> snapshot;
+  {
+    tf_shared_lock lock(mu_);
+    snapshot = output_->Snapshot();
+  }
+  auto stats = CollectProductionStatsInternal(snapshot, time_nanos);
+  return stats;
+}
+
+absl::flat_hash_map<string, std::shared_ptr<AggregateDatasetMetric>>
+Model::CollectDatasetProductionStats() {
+    tf_shared_lock lock(mu_);
+    return absl::flat_hash_map<string, std::shared_ptr<AggregateDatasetMetric>>(
+        aggregate_metrics_.begin(), aggregate_metrics_.end());
+}
+
+absl::flat_hash_map<string, std::shared_ptr<Node_Stats>>
+Model::CollectProductionStatsInternal(std::shared_ptr<Node> node,
+                                      int64 time_nanos) {
+  absl::flat_hash_map<string, std::shared_ptr<Node_Stats>> stats;
+  node->CollectProductionStats(stats, time_nanos);
+  return stats;
+}
+
 void Model::OptimizeHillClimb(std::shared_ptr<Node> snapshot,
                               const OptimizationParams& optimization_params,
                               CancellationManager* cancellation_manager) {
@@ -1929,6 +2064,18 @@ double Model::TotalMaximumBufferedBytes(std::shared_ptr<Node> node) {
 
 double Model::TotalProcessingTime(std::shared_ptr<Node> node) {
   return node->TotalProcessingTime(/*processing_times=*/nullptr);
+}
+
+AggregateDatasetMetric* Model::get_dataset_aggregate_metric(
+    const string& dataset_name) {
+  // TODO(mkuchnik): Semantics of emplace mean check can be done in one
+  // call, avoiding find
+  auto ret = aggregate_metrics_.emplace(
+      dataset_name, std::make_shared<AggregateDatasetMetric>(dataset_name));
+  const auto lookup = aggregate_metrics_.find(dataset_name);
+  DCHECK(lookup != aggregate_metrics_.end());
+  assert(ret.first->second == lookup->second);
+  return (lookup->second).get();
 }
 
 Status Model::ToProto(ModelProto* model_proto) {

@@ -16,8 +16,14 @@ limitations under the License.
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#if defined(__linux__)
+#include <linux/fs.h>  // needed for BLKSSZGET
+#endif
 #include <stdint.h>
 #include <stdio.h>
+#if defined(__linux__)
+#include <sys/ioctl.h>
+#endif
 #include <sys/mman.h>
 
 #if defined(__linux__)
@@ -44,15 +50,89 @@ namespace tensorflow {
 // 128KB of copy buffer
 constexpr size_t kPosixCopyFileBufferSize = 128 * 1024;
 
+// The environment variable to configure the throttle (format: <int64>)
+constexpr char kThrottleRate[] = "POSIX_THROTTLE_TOKEN_RATE";
+// The environment variable to configure the token bucket size (format: <int64>)
+constexpr char kThrottleBucket[] = "POSIX_THROTTLE_BUCKET_SIZE";
+// The environment variable that controls the number of tokens per request.
+// (format: <int64>)
+constexpr char kTokensPerRequest[] = "POSIX_TOKENS_PER_REQUEST";
+// The environment variable to configure the initial tokens (format: <int64>)
+constexpr char kInitialTokens[] = "POSIX_INITIAL_TOKENS";
+
+// Helper function to extract an environment variable and convert it into a
+// value of type T.
+template <typename T>
+bool GetEnvVar(const char* varname, bool (*convert)(StringPiece, T*),
+               T* value) {
+  const char* env_value = std::getenv(varname);
+  if (env_value == nullptr) {
+    return false;
+  }
+  return convert(env_value, value);
+}
+
+PosixFileSystem::PosixFileSystem():
+  throttle_(std::make_shared<PosixThrottle>()) {
+  int64 token_value;
+  if (GetEnvVar(kThrottleRate, strings::safe_strto64, &token_value)) {
+    PosixThrottleConfig config;
+    config.enabled = true;
+    config.token_rate = token_value;
+
+    if (GetEnvVar(kThrottleBucket, strings::safe_strto64, &token_value)) {
+      config.bucket_size = token_value;
+    }
+
+    if (GetEnvVar(kTokensPerRequest, strings::safe_strto64, &token_value)) {
+      config.tokens_per_request = token_value;
+    } else {
+      // NOTE(mkuchnik): no per-read limit by default
+      config.tokens_per_request = 0;
+    }
+
+    if (GetEnvVar(kInitialTokens, strings::safe_strto64, &token_value)) {
+      config.initial_tokens = token_value;
+    }
+    throttle_->SetConfig(config);
+    LOG(ERROR) << "Throttling is enabled with BW limit of "
+               << throttle_->available_max_bandwidth_kibytes_sec()
+               << "kiB/s";
+  }
+}
+
 // pread() based random-access
 class PosixRandomAccessFile : public RandomAccessFile {
  private:
   string filename_;
   int fd_;
+  const std::shared_ptr<PosixThrottle> throttle_;
+
+  void maybe_wait_on_throttle() const {
+    if (throttle_) {
+      bool is_admitted = throttle_->AdmitRequest();
+      while (!is_admitted) {
+        Env::Default()->SleepForMicroseconds(50000); // Sleep for 50ms
+        is_admitted = throttle_->AdmitRequest();
+      }
+    }
+  }
+
+  void maybe_record_throttle_bytes(size_t bytes) const {
+    if (throttle_) {
+      throttle_->RecordResponse(bytes);
+    }
+  }
 
  public:
   PosixRandomAccessFile(const string& fname, int fd)
       : filename_(fname), fd_(fd) {}
+
+  PosixRandomAccessFile(const string& fname, int fd,
+      std::shared_ptr<PosixThrottle> throttle)
+      : filename_(fname), fd_(fd), throttle_(throttle) {
+  }
+
   ~PosixRandomAccessFile() override {
     if (close(fd_) < 0) {
       LOG(ERROR) << "close() failed: " << strerror(errno);
@@ -66,6 +146,7 @@ class PosixRandomAccessFile : public RandomAccessFile {
 
   Status Read(uint64 offset, size_t n, StringPiece* result,
               char* scratch) const override {
+    maybe_wait_on_throttle();
     Status s;
     char* dst = scratch;
     while (n > 0 && s.ok()) {
@@ -91,6 +172,7 @@ class PosixRandomAccessFile : public RandomAccessFile {
         s = IOError(filename_, errno);
       }
     }
+    maybe_record_throttle_bytes(dst - scratch);
     *result = StringPiece(scratch, dst - scratch);
     return s;
   }
@@ -122,6 +204,106 @@ class PosixRandomAccessFile : public RandomAccessFile {
     return s;
   }
 #endif
+};
+
+// modified from https://stackoverflow.com/questions/1898153/how-to-determine-if-memory-is-aligned
+static inline bool is_aligned(const void* pointer, size_t byte_count) {
+  return reinterpret_cast<std::uintptr_t>(pointer) % byte_count == 0;
+}
+
+// pread() based random-access and aligned buffers (e.g., for DIRECT_IO)
+class AlignedPosixRandomAccessFile : public RandomAccessFile {
+ private:
+  string filename_;
+  int fd_;
+  uint64 alignment_;
+  const std::shared_ptr<PosixThrottle> throttle_;
+
+  void maybe_wait_on_throttle() const {
+    if (throttle_) {
+      bool is_admitted = throttle_->AdmitRequest();
+      while (!is_admitted) {
+        Env::Default()->SleepForMicroseconds(50000); // Sleep for 50ms
+        is_admitted = throttle_->AdmitRequest();
+      }
+    }
+  }
+
+  void maybe_record_throttle_bytes(size_t bytes) const {
+    if (throttle_) {
+      throttle_->RecordResponse(bytes);
+    }
+  }
+
+ public:
+  AlignedPosixRandomAccessFile(const string& fname, int fd, uint64 alignment)
+      : filename_(fname), fd_(fd), alignment_(alignment) {}
+
+  AlignedPosixRandomAccessFile(const string& fname, int fd, uint64 alignment,
+      std::shared_ptr<PosixThrottle> throttle)
+      : filename_(fname), fd_(fd), alignment_(alignment), throttle_(throttle) {
+  }
+
+  ~AlignedPosixRandomAccessFile() override {
+    // We flush the entire file to get any stragglers.
+    int ret = posix_fadvise(fd_, 0, 0, POSIX_FADV_DONTNEED);
+    if (ret) {
+      LOG(ERROR) << "POSIX fadvise failed with errno: " << strerror(errno);
+    }
+    if (close(fd_) < 0) {
+      LOG(ERROR) << "close() failed: " << strerror(errno);
+    }
+  }
+
+  Status Name(StringPiece* result) const override {
+    *result = filename_;
+    return Status::OK();
+  }
+
+  Status Read(uint64 offset, size_t n, StringPiece* result,
+              char* scratch) const override {
+    maybe_wait_on_throttle();
+    Status s;
+    if (alignment_ && !is_aligned(scratch, alignment_)) {
+      // NOTE(mkuchnik): when alignment_ is 0, assume alignment not needed
+        s = Status(error::FAILED_PRECONDITION,
+                   "Alignment of scratch does not match file alignment");
+        return s;
+    }
+    char* dst = scratch;
+    while (n > 0 && s.ok()) {
+      // Some platforms, notably macs, throw EINVAL if pread is asked to read
+      // more than fits in a 32-bit integer.
+      size_t requested_read_length;
+      if (n > INT32_MAX) {
+        requested_read_length = INT32_MAX;
+      } else {
+        requested_read_length = n;
+      }
+      ssize_t r =
+          pread(fd_, dst, requested_read_length, static_cast<off_t>(offset));
+      if (r > 0) {
+        dst += r;
+        n -= r;
+        offset += r;
+        // NOTE(mkuchnik): We tell kernel to let go of these (full) pages.
+        // Unaligned data is not cleared and will need to be purged manually.
+        int ret = posix_fadvise(fd_, offset, r, POSIX_FADV_DONTNEED);
+        if (ret) {
+          LOG(ERROR) << "POSIX fadvise failed with errno: " << strerror(errno);
+        }
+      } else if (r == 0) {
+        s = Status(error::OUT_OF_RANGE, "Read less bytes than requested");
+      } else if (errno == EINTR || errno == EAGAIN) {
+        // Retry
+      } else {
+        s = IOError(filename_, errno);
+      }
+    }
+    maybe_record_throttle_bytes(dst - scratch);
+    *result = StringPiece(scratch, dst - scratch);
+    return s;
+  }
 };
 
 class PosixWritableFile : public WritableFile {
@@ -220,6 +402,29 @@ class PosixReadOnlyMemoryRegion : public ReadOnlyMemoryRegion {
   const uint64 length_;
 };
 
+// Use ioctl with BLKSSZGET to get this alignment
+// uint64 sector_size = 0;
+// ioctl(fd, BLKSSZGET, &sector_size);
+// Often this is 512 or 4096
+Status GetLogicalBlockSize(const string& filename, int fd, uint64* sector_size) {
+#ifdef BLKSSZGET
+  Status s;
+  // TODO(mkuchnik): This is bound to fail as fd must refer to the device
+  // holding the file. Use fstat to get that device or just rely on reasonable
+  // defaults. It may also be possible to just try until no errors appear.
+  int32 ret = ioctl(fd, BLKSSZGET, sector_size);
+  if (ret < 0) {
+    s = IOError(filename, errno);
+  } else {
+    s = Status::OK();
+  }
+  return s;
+#else
+  // Non-linux devices may not be compatible, so give up.
+  return errors::Unavailable("Logical block size not implemented")
+#endif
+}
+
 Status PosixFileSystem::NewRandomAccessFile(
     const string& fname, TransactionToken* token,
     std::unique_ptr<RandomAccessFile>* result) {
@@ -229,9 +434,45 @@ Status PosixFileSystem::NewRandomAccessFile(
   if (fd < 0) {
     s = IOError(fname, errno);
   } else {
-    result->reset(new PosixRandomAccessFile(translated_fname, fd));
+    if (throttle_ && throttle_->is_enabled()) {
+      result->reset(new PosixRandomAccessFile(translated_fname, fd, throttle_));
+    } else {
+      result->reset(new PosixRandomAccessFile(translated_fname, fd));
+    }
   }
   return s;
+}
+
+Status PosixFileSystem::NewAlignedRandomAccessFile(
+    const string& fname, TransactionToken* token,
+    std::unique_ptr<RandomAccessFile>* result) {
+  // Since linux kernel 2.6.0, alignment of user buffer and transfer sizes
+  // must be multiple of underlying block device (usually 512 bytes).
+  string translated_fname = TranslateName(fname);
+  Status s;
+  int fd = open(translated_fname.c_str(), O_RDONLY);
+  if (fd < 0) {
+    s = IOError(fname, errno);
+  } else {
+    // TODO(mkuchnik): For now, we just use a default alignment as O_DIRECT is
+    // not implemented. A call to GetLogicalBlockSize can be used to find the
+    // alignment, if needed.
+    uint64 alignment = 0;
+    result->reset(
+        new AlignedPosixRandomAccessFile(translated_fname, fd, alignment));
+  }
+  return s;
+}
+
+Status PosixFileSystem::NewRandomAccessFile(
+    const string& fname, TransactionToken* token,
+    std::unique_ptr<RandomAccessFile>* result,
+    const FileOptions& options) {
+  if (!options.hint_no_cache) {
+    return NewRandomAccessFile(fname, token, result);
+  } else {
+    return NewAlignedRandomAccessFile(fname, token, result);
+  }
 }
 
 Status PosixFileSystem::NewWritableFile(const string& fname,

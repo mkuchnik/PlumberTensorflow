@@ -123,13 +123,21 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
         if (reader_) {
           out_tensors->emplace_back(ctx->allocator({}), DT_STRING,
                                     TensorShape({}));
+
+          RecordStartWait(ctx);
           Status s =
               reader_->ReadRecord(&out_tensors->back().scalar<tstring>()());
+          RecordStopWait(ctx);
           if (s.ok()) {
             static monitoring::CounterCell* bytes_counter =
                 metrics::GetTFDataBytesReadCounter(kDatasetType);
+            // TODO(mkuchnik): Note this is off by metadata size
+            const auto bytes_read =
+                out_tensors->back().scalar<tstring>()().size();
             bytes_counter->IncrementBy(
-                out_tensors->back().scalar<tstring>()().size());
+                bytes_read);
+            RecordDiskBytesRead(ctx, bytes_read);
+            total_bytes_read_ += bytes_read;
             *end_of_sequence = false;
             return Status::OK();
           }
@@ -138,14 +146,20 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
             // In case of other errors e.g., DataLoss, we still move forward
             // the file index so that it works with ignore_errors.
             // Otherwise the same file will repeat.
+            RecordEOFReached(ctx);
+            RecordStartWait(ctx);
             ResetStreamsLocked();
+            RecordStopWait(ctx);
             ++current_file_index_;
             return s;
           }
 
           // We have reached the end of the current file, so maybe move on to
           // next file.
+          RecordEOFReached(ctx);
+          RecordStartWait(ctx);
           ResetStreamsLocked();
+          RecordStopWait(ctx);
           ++current_file_index_;
         }
 
@@ -155,7 +169,10 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
           return Status::OK();
         }
 
+        RecordStartWait(ctx);
         TF_RETURN_IF_ERROR(SetupStreamsLocked(ctx->env()));
+        RecordStopWait(ctx);
+        RecordElementConsumed(ctx);
       } while (true);
     }
 
@@ -168,8 +185,10 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
         // the next (num_to_skip - *num_skipped) record.
         if (reader_) {
           int last_num_skipped;
+          RecordStartWait(ctx);
           Status s = reader_->SkipRecords(num_to_skip - *num_skipped,
                                           &last_num_skipped);
+          RecordStopWait(ctx);
           *num_skipped += last_num_skipped;
           if (s.ok()) {
             *end_of_sequence = false;
@@ -179,14 +198,20 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
             // In case of other errors e.g., DataLoss, we still move forward
             // the file index so that it works with ignore_errors.
             // Otherwise the same file will repeat.
+            RecordEOFReached(ctx);
+            RecordStartWait(ctx);
             ResetStreamsLocked();
+            RecordStopWait(ctx);
             ++current_file_index_;
             return s;
           }
 
           // We have reached the end of the current file, so maybe move on to
           // next file.
+          RecordEOFReached(ctx);
+          RecordStartWait(ctx);
           ResetStreamsLocked();
+          RecordStopWait(ctx);
           ++current_file_index_;
         }
 
@@ -196,7 +221,10 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
           return Status::OK();
         }
 
+        RecordStartWait(ctx);
         TF_RETURN_IF_ERROR(SetupStreamsLocked(ctx->env()));
+        RecordStopWait(ctx);
+        RecordElementConsumed(ctx); // TODO(mkuchnik): Remove?
       } while (true);
     }
 
@@ -232,6 +260,7 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
         TF_RETURN_IF_ERROR(reader->ReadScalar(full_name(kOffset), &offset));
         TF_RETURN_IF_ERROR(SetupStreamsLocked(ctx->env()));
         TF_RETURN_IF_ERROR(reader_->SeekOffset(offset));
+        RecordElementConsumed(ctx);
       }
       return Status::OK();
     }
@@ -250,17 +279,38 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
       TF_RETURN_IF_ERROR(env->NewRandomAccessFile(next_filename, &file_));
       reader_ = absl::make_unique<io::SequentialRecordReader>(
           file_.get(), dataset()->options_);
+      total_bytes_read_ = 0;
       return Status::OK();
+    }
+
+    void RecordEOFReached(IteratorContext* ctx)
+        TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+      // Signal end of file
+      const std::string* filename = current_filename();
+      if (filename) {
+        RecordFileRead(ctx, *filename, total_bytes_read_);
+      }
+    }
+
+    const std::string* current_filename() TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+      if (current_file_index_ < 0
+          || current_file_index_ >= dataset()->filenames_.size()) {
+        // Out of range
+        return nullptr;
+      }
+      return &dataset()->filenames_[current_file_index_];
     }
 
     // Resets all reader streams.
     void ResetStreamsLocked() TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
       reader_.reset();
       file_.reset();
+      total_bytes_read_ = 0;
     }
 
     mutex mu_;
     size_t current_file_index_ TF_GUARDED_BY(mu_) = 0;
+    int64 total_bytes_read_  TF_GUARDED_BY(mu_) = 0;
 
     // `reader_` will borrow the object that `file_` points to, so
     // we must destroy `reader_` before `file_`.

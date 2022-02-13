@@ -229,6 +229,27 @@ class OptimizationOptions(options_lib.OptionsBase):
       "budget to use. Values greater than the available RAM in bytes may "
       "result in OOM. If None, defaults to half of the available RAM in bytes.")
 
+  autotune_stats_filename = options_lib.create_option(
+      name="autotune_stats_filename",
+      ty=str,
+      docstring=
+      "When autotuning is enabled (through `autotune`), determines the "
+      "output filename to use.")
+
+  autotune_stats_dump_period = options_lib.create_option(
+      name="autotune_stats_dump_period",
+      ty=int,
+      docstring=
+      "When autotuning is enabled (through `autotune`), determines the "
+      "period (in ms) at which to write out statistics.")
+
+  autotune_span_collection_interval = options_lib.create_option(
+      name="autotune_span_collection_interval",
+      ty=int,
+      docstring=
+      "When autotuning is enabled (through `autotune`), determines the "
+      "interval (in GetNext calls) at which to collect spans.")
+
   filter_fusion = options_lib.create_option(
       name="filter_fusion",
       ty=bool,
@@ -297,6 +318,12 @@ class OptimizationOptions(options_lib.OptionsBase):
       pb.autotune_cpu_budget = self.autotune_cpu_budget
     if self.autotune_ram_budget is not None:
       pb.autotune_ram_budget = self.autotune_ram_budget
+    if self.autotune_stats_filename is not None:
+      pb.autotune_stats_filename = self.autotune_stats_filename
+    if self.autotune_stats_dump_period is not None:
+      pb.autotune_stats_dump_period = self.autotune_stats_dump_period
+    if self.autotune_span_collection_interval is not None:
+      pb.autotune_span_collection_interval = self.autotune_span_collection_interval
     if self.filter_fusion is not None:
       pb.filter_fusion = self.filter_fusion
     if self.map_and_batch_fusion is not None:
@@ -326,6 +353,12 @@ class OptimizationOptions(options_lib.OptionsBase):
       self.autotune_cpu_budget = pb.autotune_cpu_budget
     if pb.WhichOneof("optional_autotune_ram_budget") is not None:
       self.autotune_ram_budget = pb.autotune_ram_budget
+    if pb.WhichOneof("optional_autotune_stats_filename") is not None:
+      self.autotune_stats_filename = pb.autotune_stats_filename
+    if pb.WhichOneof("optional_autotune_stats_dump_period") is not None:
+      self.autotune_stats_dump_period = pb.autotune_stats_dump_period
+    if pb.WhichOneof("optional_autotune_span_collection_interval") is not None:
+      self.autotune_span_collection_interval = pb.autotune_span_collection_interval
     if pb.WhichOneof("optional_filter_fusion") is not None:
       self.filter_fusion = pb.filter_fusion
     if pb.WhichOneof("optional_map_and_batch_fusion") is not None:

@@ -931,6 +931,9 @@ REGISTER_OP("ModelDataset")
     .Attr("algorithm: int = 0")
     .Attr("cpu_budget: int = 0")
     .Attr("ram_budget: int = 0")
+    .Attr("stats_filename: string = ''") // NOTE(mkuchnik): Breaks compat
+    .Attr("stats_dump_period: int = 0") // NOTE(mkuchnik): Breaks compat
+    .Attr("span_collection_interval: int = 0") // NOTE(mkuchnik): Breaks compat
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
     .SetShapeFn(shape_inference::ScalarShape);

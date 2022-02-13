@@ -209,6 +209,9 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
                              std::vector<Tensor>* out_tensors,
                              bool* end_of_sequence) override {
         mutex_lock l(mu_);
+#ifndef LIGHTWEIGHT_METRICS
+        RecordMiscBuffer(ctx, key_space_size_ * window_space_size_);
+#endif
         do {
           if (current_group_iterator_) {
             // We are currently processing a group, so try to get the
@@ -278,7 +281,13 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
               const int64_t window_size = window_sizes_[key];
 
               std::vector<std::vector<Tensor>>& group = groups_[key];
+              RecordIndirectBufferElement(ctx, next_input_element);
               group.push_back(std::move(next_input_element));
+#ifndef LIGHTWEIGHT_METRICS
+              key_space_size_ = std::max<int64>(key_space_size_,
+                                                groups_.size());
+              window_space_size_ = std::max(window_space_size_, window_size);
+#endif
 
               if (group.size() == window_size) {
                 current_key_ = key;
@@ -475,9 +484,13 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
       Status StartFlushingGroup(IteratorContext* ctx, int64_t key)
           TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
         DatasetBase* group_dataset;
+        const auto name = strings::StrCat(
+            dataset()->node_name(), ":", "window_dataset");
         TF_RETURN_IF_ERROR(
             NewWindow(groups_[key], dataset()->input_->output_dtypes(),
-                      dataset()->input_->output_shapes(), &group_dataset));
+                      dataset()->input_->output_shapes(),
+                      name,
+                      &group_dataset));
 
         Tensor key_arg(DT_INT64, TensorShape({}));
         key_arg.scalar<int64>()() = key;
@@ -526,6 +539,10 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
       std::unique_ptr<InstantiatedCapturedFunction> instantiated_reduce_func_;
       std::unique_ptr<InstantiatedCapturedFunction>
           instantiated_window_size_func_;
+#ifndef LIGHTWEIGHT_METRICS
+      int64 key_space_size_ TF_GUARDED_BY(mu_) = 0;
+      int64 window_space_size_ TF_GUARDED_BY(mu_) = 0;
+#endif
     };
 
     const DatasetBase* const input_;

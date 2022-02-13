@@ -33,12 +33,20 @@ class ModelDatasetOp : public UnaryDatasetOpKernel {
   static constexpr const char* const kAlgorithm = "algorithm";
   static constexpr const char* const kCpuBudget = "cpu_budget";
   static constexpr const char* const kRamBudget = "ram_budget";
+  static constexpr const char* const kStatsFilename = "stats_filename";
+  static constexpr const char* const kStatsDumpPeriod =
+    "stats_dump_period"; // in ms
+  static constexpr const char* const kSpanCollectionInterval =
+    "span_collection_interval"; // in GetNext calls
 
   // Executes the logic of the ModelDatasetOp directly (as opposed to through
   // executing the ModelDatasetOp op kernel).
   static void MakeDatasetFromOptions(OpKernelContext* ctx, DatasetBase* input,
                                      model::AutotuneAlgorithm algorithm,
                                      bool cpu_budget, bool ram_budget,
+                                     const std::string& stats_filename,
+                                     int64 stats_dump_period,
+                                     int64 span_collection_interval,
                                      DatasetBase** output);
 
   explicit ModelDatasetOp(OpKernelConstruction* ctx);
@@ -53,6 +61,9 @@ class ModelDatasetOp : public UnaryDatasetOpKernel {
   model::AutotuneAlgorithm algorithm_;
   int64 cpu_budget_;
   int64 ram_budget_;
+  string stats_filename_;
+  int64 stats_dump_period_;
+  int64 span_collection_interval_;
 };
 
 }  // namespace data
@@ -71,6 +82,9 @@ class ModelDatasetOp : public UnaryDatasetOpKernel {
   static void MakeDatasetFromOptions(OpKernelContext* ctx, DatasetBase* input,
                                      model::AutotuneAlgorithm algorithm,
                                      bool cpu_budget, bool ram_budget,
+                                     const std::string& stats_filename,
+                                     int64 stats_dump_period,
+                                     int64 span_collection_interval,
                                      DatasetBase** output);
 
   explicit ModelDatasetOp(OpKernelConstruction* ctx);

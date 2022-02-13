@@ -18,12 +18,18 @@ limitations under the License.
 
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/path.h"
+#include "tensorflow/core/platform/default/posix_throttle.h"
 
 namespace tensorflow {
 
 class PosixFileSystem : public FileSystem {
  public:
-  PosixFileSystem() {}
+  PosixFileSystem();
+
+  PosixFileSystem(const PosixThrottleConfig& config):
+    throttle_(std::make_shared<PosixThrottle>()) {
+      throttle_->SetConfig(config);
+  }
 
   ~PosixFileSystem() {}
 
@@ -32,6 +38,11 @@ class PosixFileSystem : public FileSystem {
   Status NewRandomAccessFile(
       const string& filename, TransactionToken* token,
       std::unique_ptr<RandomAccessFile>* result) override;
+
+  Status NewRandomAccessFile(
+      const string& filename, TransactionToken* token,
+      std::unique_ptr<RandomAccessFile>* result,
+      const FileOptions& options) override;
 
   Status NewWritableFile(const string& fname, TransactionToken* token,
                          std::unique_ptr<WritableFile>* result) override;
@@ -68,6 +79,11 @@ class PosixFileSystem : public FileSystem {
 
   Status CopyFile(const string& src, const string& target,
                   TransactionToken* token) override;
+ private:
+  Status NewAlignedRandomAccessFile(
+      const string& filename, TransactionToken* token,
+      std::unique_ptr<RandomAccessFile>* result);
+  const std::shared_ptr<PosixThrottle> throttle_;
 };
 
 Status IOError(const string& context, int err_number);

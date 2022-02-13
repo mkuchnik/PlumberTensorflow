@@ -41,6 +41,7 @@ TENSORFLOW_API_INIT_FILES = [
     "config/threading/__init__.py",
     "data/__init__.py",
     "data/experimental/__init__.py",
+    "data/experimental/analysis/__init__.py",
     "data/experimental/service/__init__.py",
     "debugging/__init__.py",
     "debugging/experimental/__init__.py",

@@ -277,6 +277,12 @@ bool ShouldUsePrivateThreadPool(const Options& options);
 // Determines whether autotuning should be used.
 bool ShouldUseAutotuning(const Options& options);
 
+// Determines whether modeling should be used.
+bool ShouldUseModeling(const Options& options);
+
+// Determines whether advanced modeling should be used.
+bool ShouldUseAnalysisTracing(const Options& options);
+
 // Determines whether optimizations should be applied.
 bool ShouldApplyOptimizations(
     const Options& options,

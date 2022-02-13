@@ -37,13 +37,21 @@ namespace {
 
 void GetModelDatasetParams(const Options& options,
                            model::AutotuneAlgorithm* algorithm,
-                           bool* cpu_budget, bool* ram_budget) {
+                           bool* cpu_budget, bool* ram_budget,
+                           std::string& stats_filename,
+                           int64* stats_dump_period,
+                           int64* span_collection_interval) {
   *algorithm = model::AutotuneAlgorithm::HILL_CLIMB;
   if (options.optimization_options().autotune_buffers()) {
     *algorithm = model::AutotuneAlgorithm::GRADIENT_DESCENT;
   }
   *cpu_budget = options.optimization_options().autotune_cpu_budget();
   *ram_budget = options.optimization_options().autotune_ram_budget();
+  stats_filename = options.optimization_options().autotune_stats_filename();
+  *stats_dump_period =
+    options.optimization_options().autotune_stats_dump_period();
+  *span_collection_interval =
+    options.optimization_options().autotune_span_collection_interval();
 }
 
 void MakeDatasetHelper(OpKernelContext* ctx, bool has_captured_ref,
@@ -69,9 +77,19 @@ void MakeDatasetHelper(OpKernelContext* ctx, bool has_captured_ref,
     model::AutotuneAlgorithm algorithm;
     bool cpu_budget;
     bool ram_budget;
-    GetModelDatasetParams(options, &algorithm, &cpu_budget, &ram_budget);
-    ModelDatasetOp::MakeDatasetFromOptions(ctx, input, algorithm, cpu_budget,
-                                           ram_budget, output);
+    std::string stats_filename;
+    int64 stats_dump_period;
+    int64 span_collection_interval;
+    GetModelDatasetParams(options, &algorithm, &cpu_budget, &ram_budget,
+                          stats_filename,
+                          &stats_dump_period,
+                          &span_collection_interval);
+    ModelDatasetOp::MakeDatasetFromOptions(ctx, input, algorithm,
+                                           cpu_budget, ram_budget,
+                                           stats_filename,
+                                           stats_dump_period,
+                                           span_collection_interval,
+                                           output);
     input->Unref();
     input = *output;
   }
@@ -93,9 +111,19 @@ void MakeDatasetHelper(OpKernelContext* ctx, bool has_captured_ref,
              "`tf.enable_resource_variables()` at the start of the program.";
     } else {
       auto optimization_configs = CreateGraphRewriteConfigs(options);
-      OptimizeDatasetOp::MakeDatasetFromOptions(
-          ctx, input, optimizations_enabled, optimizations_disabled,
-          optimizations_default, optimization_configs, output);
+      if (ShouldUseAnalysisTracing(options)) {
+        GraphDef output_graph_def;
+        OptimizeDatasetOp::MakeDatasetFromOptions(
+            ctx, input, optimizations_enabled, optimizations_disabled,
+            optimizations_default, optimization_configs, output,
+            &output_graph_def);
+        (*output)->propagate_graphdef_update(output_graph_def);
+      } else {
+        OptimizeDatasetOp::MakeDatasetFromOptions(
+            ctx, input, optimizations_enabled, optimizations_disabled,
+            optimizations_default, optimization_configs, output,
+            /*output_graph_def=*/nullptr);
+      }
       input->Unref();
       input = *output;
     }

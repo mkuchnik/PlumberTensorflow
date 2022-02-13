@@ -140,6 +140,9 @@ class MapDatasetOp::Dataset : public DatasetBase {
     Status Initialize(IteratorContext* ctx) override {
       TF_RETURN_IF_ERROR(
           dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_));
+      if (dataset()->captured_func_->use_inter_op_parallelism()) {
+        RecordInterOpParallelism(ctx);
+      }
       return dataset()->captured_func_->Instantiate(
           ctx, &instantiated_captured_func_);
     }

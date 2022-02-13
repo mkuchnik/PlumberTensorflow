@@ -269,6 +269,10 @@ class ParseExampleDatasetOp : public UnaryDatasetOpKernel {
       return name_utils::DatasetDebugString(kDatasetType, params);
     }
 
+    int64 Parallelism() const override {
+      return num_parallel_calls_;
+    }
+
     int64 Cardinality() const override { return input_->Cardinality(); }
 
     Status InputDatasets(

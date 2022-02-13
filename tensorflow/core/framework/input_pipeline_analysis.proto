@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package tensorflow;
+
+import "tensorflow/core/framework/graph.proto";
+
+message SpanContextSnapshot {
+  message Span {
+    string name = 1;
+    int64 start_time = 2;
+    int64 end_time = 3;
+  }
+
+  message SpanContext {
+    repeated Span spans = 1;
+  }
+
+  repeated SpanContext span_ctxs = 1;
+}
+
+// A snapshot of data pipeline activity
+message PipelineSnapshot {
+  GraphDef graph = 1;
+
+  // A snapshot of per-op activity
+  message OpStats {
+    int64 elements_produced = 1;
+    int64 wallclock_time = 2;
+    int64 processing_time = 3;
+    int64 parallelism = 4;
+    double element_ratio = 5;
+    string name = 6;
+    int64 count = 7;
+    int64 bytes_produced = 8;
+    int64 bytes_consumed = 9;
+    int64 processing_time_clock = 10;
+    int64 estimated_dataset_size = 11 [deprecated=true];
+    int64 aggregate_elements_produced = 12; // global counters
+    int64 aggregate_processing_time = 13; // global counters
+    int64 aggregate_processing_time_clock = 14; // global counters
+    int64 scheduling_delay_time = 15;
+    int64 aggregate_bytes_produced = 16; // global counters
+    int64 aggregate_bytes_consumed = 17; // global counters
+    int64 aggregate_udf_processing_time = 18; // global counters
+    int64 aggregate_udf_processing_time_clock = 19; // global counters
+    int64 aggregate_scheduling_delay_time = 20; // global counters
+    double aggregate_avg_number_active_threads = 21; // global counters
+    bool aggregate_inter_op_parallelism = 22;
+    int64 aggregate_wait_time = 23;
+    int64 aggregate_disk_bytes_read = 24;
+    int64 aggregate_elements_consumed = 25; // For file->record ratios
+    int64 cardinality = 26;
+    int64 aggregate_ratio = 27;
+    int64 aggregate_parallelism = 28;
+    int64 aggregate_max_buffer_size = 29;
+    int64 aggregate_max_bytes_per_element = 30;
+    int64 aggregate_misc_buffer_size = 31;
+    // TODO(mkuchnik) Memory touched
+    // TODO(mkuchnik) Memory allocated (use tracking_allocator)
+  }
+
+  repeated OpStats stats = 2;
+
+  // Machine statistics
+  message MachineInfo {
+    int64 num_cores = 1;
+    int64 memory_free = 2;
+    int64 memory_total = 3;
+    double estimated_disk_bandwidth = 4;
+    int64 num_hyperthreads_per_core = 5;
+    double nominal_cpu_frequency = 6;
+    string model = 7;
+  }
+
+  MachineInfo machine_info = 3;
+
+  message FileSize {
+    string name = 1;
+    int64 size = 2;
+  }
+
+  message CtxInfo {
+    int64 shared_threadpool_size = 1;  // Non-blocking functions
+    int64 udf_threadpool_size = 2;  // User defined functions
+    // The sizes of files read during the iteration
+    repeated FileSize file_sizes = 3;
+  }
+
+  CtxInfo ctx_info = 4;
+
+  message IteratorStats {
+    double avg_duration = 1;
+    double var_duration = 2;
+    double avg_wallclock_duration = 3;
+    double autotune_output_time = 4;
+  }
+
+  IteratorStats iter_stats = 5;
+
+  message SnapshotInfo {
+    int64 start_time = 1;  // nanoseconds
+    int64 current_time = 2;  // nanoseconds
+    int64 process_start_time = 3;
+    int64 process_current_time = 4;
+  }
+
+  // TODO(mkuchnik): Disk stats for average I/O size (small I/O is random)
+
+  SnapshotInfo snapshot_info = 6;
+
+  SpanContextSnapshot spans_context_snapshot = 7;
+}
+

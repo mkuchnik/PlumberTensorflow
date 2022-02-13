@@ -76,6 +76,7 @@ See [Importing Data](https://tensorflow.org/guide/datasets) for an overview.
 @@save
 @@scan
 @@shuffle_and_repeat
+@@sleep
 @@snapshot
 @@table_from_dataset
 @@take_while
@@ -94,6 +95,7 @@ from __future__ import division
 from __future__ import print_function
 
 # pylint: disable=unused-import
+from tensorflow.python.data.experimental import analysis
 from tensorflow.python.data.experimental import service
 from tensorflow.python.data.experimental.ops.batching import dense_to_ragged_batch
 from tensorflow.python.data.experimental.ops.batching import dense_to_sparse_batch
@@ -134,6 +136,7 @@ from tensorflow.python.data.experimental.ops.readers import SqlDataset
 from tensorflow.python.data.experimental.ops.resampling import rejection_resample
 from tensorflow.python.data.experimental.ops.scan_ops import scan
 from tensorflow.python.data.experimental.ops.shuffle_ops import shuffle_and_repeat
+from tensorflow.python.data.experimental.ops.sleep import sleep
 from tensorflow.python.data.experimental.ops.snapshot import snapshot
 from tensorflow.python.data.experimental.ops.take_while_ops import take_while
 from tensorflow.python.data.experimental.ops.unique import unique
@@ -162,6 +165,7 @@ from tensorflow.python.framework.type_spec import TypeSpec as Structure
 from tensorflow.python.util.all_util import remove_undocumented
 
 _allowed_symbols = [
+    "analysis",
     "service",
 ]
 

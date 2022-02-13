@@ -42,6 +42,7 @@ namespace data {
 Status NewWindow(std::vector<std::vector<Tensor>> elements,
                  DataTypeVector output_types,
                  std::vector<PartialTensorShape> output_shapes,
+                 const std::string& node_name,
                  DatasetBase** out_dataset);
 
 }  // namespace data

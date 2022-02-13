@@ -614,6 +614,9 @@ class SerializationContext {
     // reduce the memory usage.
     bool serialize_data_tensors = true;
 
+    // Indicates whether to ignore UDF tensors. Useful for DT_Resource.
+    bool no_serialize_udf_data_tensors = false;
+
     // Indicates whether datasets that use random seeds should have the values
     // of random seeds serialized or not. If the values of random seeds are
     // serialized, the deserialized dataset will have the same seeds as the
@@ -642,6 +645,8 @@ class SerializationContext {
   bool fail_if_unimplemented() const { return params_.fail_if_unimplemented; }
 
   bool serialize_data_tensors() const { return params_.serialize_data_tensors; }
+
+  bool no_serialize_udf_data_tensors() const { return params_.no_serialize_udf_data_tensors; }
 
   bool preserve_random_seeds() const { return params_.preserve_random_seeds; }
 
@@ -869,7 +874,9 @@ class DatasetBase : public core::RefCounted {
   TF_EXPORT static const char kDatasetGraphOutputNodeKey[];
 
   explicit DatasetBase(DatasetContext&& ctx)
-      : type_string_(ctx.type_string()), node_name_(ctx.node_name()) {}
+      : is_root_(false),
+        type_string_(ctx.type_string()),
+        node_name_(ctx.node_name()) {}
 
   // Op type name of this dataset.
   const string& type_string() const { return type_string_; }
@@ -877,6 +884,12 @@ class DatasetBase : public core::RefCounted {
   // Graph node name of this dataset op, uniquely identifying the dataset in
   // the graph.
   const string& node_name() const { return node_name_; }
+
+  void propagate_graphdef_update(const GraphDef& graph_def) {
+    VLOG(0) << "Graphdef propagated to " << node_name_;
+    is_root_ = true;
+    graph_def_ = graph_def;
+  }
 
   // Initializes the dataset.
   void Initialize();
@@ -954,6 +967,14 @@ class DatasetBase : public core::RefCounted {
 
   // A human-readable debug string for this dataset.
   virtual string DebugString() const = 0;
+
+  // The parallelism of the op.
+  virtual int64 Parallelism() const { return 1; }
+
+  // TODO(mkuchnik): This is hackily used to transmit graph_def to model
+  GraphDef graph_def_;
+
+  bool is_root_;
 
   // Stores the dataset's input datasets in `*inputs`. The pointers stored in
   // `*inputs` are borrowed. The only valid non-ok return status is
@@ -1135,7 +1156,7 @@ class DatasetBaseIterator : public IteratorBase {
   // has dequeued an element from an internal buffer.
   void RecordBufferDequeue(IteratorContext* ctx,
                            const std::vector<Tensor>& element) {
-    if (collect_resource_usage(ctx)) {
+    if (collect_heavy_resource_usage(ctx)) {
       node_->record_buffer_event(-GetAllocatedBytes(element), -1);
     }
   }
@@ -1144,9 +1165,30 @@ class DatasetBaseIterator : public IteratorBase {
   // has enqueued an element in an internal buffer.
   void RecordBufferEnqueue(IteratorContext* ctx,
                            const std::vector<Tensor>& element) {
-    if (collect_resource_usage(ctx)) {
+    if (collect_heavy_resource_usage(ctx)) {
       node_->record_buffer_event(GetAllocatedBytes(element), 1);
     }
+  }
+
+  // When modeling is enabled, this method records a direct buffer size
+  // Used when RecordBufferDeque and RecordBufferEnque are not used.
+  void RecordIndirectBufferElement(IteratorContext* ctx,
+                                   const std::vector<Tensor>& element) {
+#ifndef LIGHTWEIGHT_PROFILING
+    if (collect_resource_usage(ctx)) {
+      node_->record_element_size(GetAllocatedBytes(element));
+    }
+#endif
+  }
+
+  // When modeling is enabled, this method records a miscellenous buffer size
+  void RecordMiscBuffer(IteratorContext* ctx,
+                        int64 buffer_size) {
+#ifndef LIGHTWEIGHT_PROFILING
+    if (collect_resource_usage(ctx)) {
+      node_->record_misc_buffer_size(buffer_size);
+    }
+#endif
   }
 
   // When modeling is enabled, this method records the fact that this iterator
@@ -1164,20 +1206,44 @@ class DatasetBaseIterator : public IteratorBase {
 
   // When modeling is enabled, this method records the fact that a thread of
   // this iterator has started work.
+  template<bool is_wallclock=model::default_is_wallclock, bool is_CPU=model::default_is_CPU>
   void RecordStart(IteratorContext* ctx) {
     if (collect_resource_usage(ctx)) {
       int64_t now_nanos = EnvTime::NowNanos();
-      node_->record_start(now_nanos);
+      node_->record_start<is_wallclock, is_CPU>(now_nanos);
     }
   }
 
   // When modeling is enabled, this method records the fact that a thread of
   // this iterator has stopped work.
+  template<bool is_wallclock=model::default_is_wallclock, bool is_CPU=model::default_is_CPU>
   void RecordStop(IteratorContext* ctx) {
     if (collect_resource_usage(ctx)) {
       int64_t now_nanos = EnvTime::NowNanos();
-      node_->record_stop(now_nanos);
+      node_->record_stop<is_wallclock, is_CPU>(now_nanos);
     }
+  }
+
+  // When modeling is enabled, this method records the amount of time that a
+  // thread waits for its input iterator to return.
+  void RecordStartWait(IteratorContext* ctx) {
+#ifndef LIGHTWEIGHT_PROFILING
+    if (collect_resource_usage(ctx)) {
+      int64 now_nanos = EnvTime::NowNanos();
+      node_->record_start_wait(now_nanos);
+    }
+#endif
+  }
+
+  // When modeling is enabled, this method records the amount of time that a
+  // thread stops waiting for its input iterator to return.
+  void RecordStopWait(IteratorContext* ctx) {
+#ifndef LIGHTWEIGHT_PROFILING
+    if (collect_resource_usage(ctx)) {
+      int64 now_nanos = EnvTime::NowNanos();
+      node_->record_stop_wait(now_nanos);
+    }
+#endif
   }
 
   // Returns whether work is currently being recorded, i.e. whether we are
@@ -1186,10 +1252,60 @@ class DatasetBaseIterator : public IteratorBase {
     return collect_resource_usage(ctx) && node_->is_recording();
   }
 
+  void RecordNumActiveThreads(IteratorContext* ctx, int64 num_threads) {
+#ifndef LIGHTWEIGHT_PROFILING
+    if (collect_resource_usage(ctx)) {
+      node_->record_num_active_threads(num_threads);
+    }
+#endif
+  }
+
+  void RecordDiskBytesRead(IteratorContext* ctx, int64 bytes_read) {
+    if (collect_resource_usage(ctx)) {
+      node_->record_disk_bytes_read(bytes_read);
+      node_->record_element_size(bytes_read);
+    }
+  }
+
+  void RecordNetworkBytesRead(IteratorContext* ctx, int64 bytes_read) {
+    if (collect_resource_usage(ctx)) {
+      // TODO(mkuchnik): Switch to different counter or rename
+      node_->record_disk_bytes_read(bytes_read);
+      node_->record_element_size(bytes_read);
+    }
+  }
+
+  void RecordFileRead(IteratorContext* ctx, const std::string& filename,
+                      int64 bytes_read) {
+    auto model = ctx->model();
+    if (model && model->collect_resource_usage()) {
+      model->RecordFileRead(filename, bytes_read);
+    }
+  }
+
+  void RecordElementConsumed(IteratorContext* ctx) {
+    if (collect_resource_usage(ctx)) {
+      node_->record_element_consumed();
+    }
+  }
+
+  void RecordInterOpParallelism(IteratorContext* ctx) {
+#ifndef LIGHTWEIGHT_PROFILING
+    if (collect_resource_usage(ctx)) {
+      node_->record_inter_op_parallelism();
+    }
+#endif
+  }
+
  private:
   bool collect_resource_usage(IteratorContext* ctx) {
     auto model = ctx->model();
     return model && model->collect_resource_usage() && node_;
+  }
+
+  bool collect_heavy_resource_usage(IteratorContext* ctx) {
+    auto model = ctx->model();
+    return model && model->collect_heavy_resource_usage() && node_;
   }
 
   string traceme_metadata_;

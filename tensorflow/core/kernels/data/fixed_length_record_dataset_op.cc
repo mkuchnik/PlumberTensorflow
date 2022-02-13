@@ -140,11 +140,14 @@ class FixedLengthRecordDatasetOp::Dataset : public DatasetBase {
           DCHECK_GE(file_pos_limit_, 0);
           if (current_pos < file_pos_limit_) {
             string record;
+            RecordStartWait(ctx);
             TF_RETURN_IF_ERROR(
                 input_buffer_->ReadNBytes(dataset()->record_bytes_, &record));
+            RecordStopWait(ctx);
             static monitoring::CounterCell* bytes_counter =
                 metrics::GetTFDataBytesReadCounter(kDatasetType);
             bytes_counter->IncrementBy(dataset()->record_bytes_);
+            RecordDiskBytesRead(ctx, dataset()->record_bytes_);
 
             // Produce the record as output.
             Tensor record_tensor(ctx->allocator({}), DT_STRING, {});
@@ -171,6 +174,8 @@ class FixedLengthRecordDatasetOp::Dataset : public DatasetBase {
         uint64 file_size;
         TF_RETURN_IF_ERROR(ctx->env()->GetFileSize(
             dataset()->filenames_[current_file_index_], &file_size));
+        RecordFileRead(ctx, dataset()->filenames_[current_file_index_],
+                       file_size);
         file_pos_limit_ = file_size - dataset()->footer_bytes_;
 
         uint64 body_size =
@@ -267,9 +272,12 @@ class FixedLengthRecordDatasetOp::Dataset : public DatasetBase {
             DCHECK_GE(file_pos_limit_, 0);
             if (current_pos < file_pos_limit_) {
               tstring record;
+              RecordStartWait(ctx);
               TF_RETURN_IF_ERROR(buffered_input_stream_->ReadNBytes(
                   dataset()->record_bytes_, &record));
+              RecordStopWait(ctx);
               bytes_counter->IncrementBy(dataset()->record_bytes_);
+              RecordDiskBytesRead(ctx, dataset()->record_bytes_);
 
               // Produce the record as output.
               Tensor record_tensor(ctx->allocator({}), DT_STRING, {});
@@ -280,10 +288,13 @@ class FixedLengthRecordDatasetOp::Dataset : public DatasetBase {
             }
           } else {
             tstring record;
+            RecordStartWait(ctx);
             Status s = buffered_input_stream_->ReadNBytes(
                 dataset()->record_bytes_, &record);
+            RecordStopWait(ctx);
             if (s.ok()) {
               bytes_counter->IncrementBy(dataset()->record_bytes_);
+              RecordDiskBytesRead(ctx, dataset()->record_bytes_);
               lookahead_cache_.append(record);
               StringPiece lookahead_cache_view(lookahead_cache_);
               record = tstring(
@@ -331,6 +342,8 @@ class FixedLengthRecordDatasetOp::Dataset : public DatasetBase {
           uint64 file_size;
           TF_RETURN_IF_ERROR(ctx->env()->GetFileSize(
               dataset()->filenames_[current_file_index_], &file_size));
+          RecordFileRead(ctx, dataset()->filenames_[current_file_index_],
+                         file_size);
           file_pos_limit_ = file_size - dataset()->footer_bytes_;
 
           uint64 body_size =
@@ -368,8 +381,10 @@ class FixedLengthRecordDatasetOp::Dataset : public DatasetBase {
             buffered_input_stream_->SkipNBytes(dataset()->header_bytes_));
         lookahead_cache_.clear();
         if (!dataset()->compression_type_.empty()) {
+          RecordStartWait(ctx);
           TF_RETURN_IF_ERROR(buffered_input_stream_->ReadNBytes(
               dataset()->footer_bytes_, &lookahead_cache_));
+          RecordStopWait(ctx);
         }
       } while (true);
     }

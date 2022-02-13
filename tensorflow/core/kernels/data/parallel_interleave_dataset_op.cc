@@ -217,6 +217,11 @@ class ParallelInterleaveDatasetOp::Dataset : public DatasetBase {
         ParallelInterleaveDatasetOp::kDatasetType, params);
   }
 
+  int64 Parallelism() const override {
+    //TODO(mkuchnik): autotuned num_parallel_calls_ overrides this;
+    return num_parallel_calls_;
+  }
+
   int64 Cardinality() const override {
     int64_t n = input_->Cardinality();
     if (n == kInfiniteCardinality) {

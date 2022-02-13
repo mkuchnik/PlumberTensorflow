@@ -461,8 +461,8 @@ class DatasetV2(collections_abc.Iterable, tracking_base.Trackable,
     output_shapes = str(output_shapes).replace("'", "")
     output_types = nest.map_structure(repr, get_legacy_output_types(self))
     output_types = str(output_types).replace("'", "")
-    return ("<%s shapes: %s, types: %s>" % (type(self).__name__, output_shapes,
-                                            output_types))
+    return ("<%s shapes: %s, types: %s>" %
+            (type(self).__name__, output_shapes, output_types))
 
   def as_numpy_iterator(self):
     """Returns an iterator which converts all elements of the dataset to numpy.

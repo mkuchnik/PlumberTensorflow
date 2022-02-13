@@ -865,6 +865,14 @@ bool ShouldUseAutotuning(const Options& options) {
          options.optimization_options().autotune();
 }
 
+bool ShouldUseModeling(const Options& options) {
+  return ShouldUseAutotuning(options) || ShouldUseAnalysisTracing(options);
+}
+
+bool ShouldUseAnalysisTracing(const Options& options) {
+  return !options.optimization_options().autotune_stats_filename().empty();
+}
+
 bool ShouldApplyOptimizations(
     const Options& options,
     const absl::flat_hash_set<tstring>& optimizations_enabled,

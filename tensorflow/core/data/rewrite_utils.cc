@@ -168,6 +168,14 @@ RewriterConfig CreateRewriterConfig(
 Status RewriteDataset(OpKernelContext* ctx, const DatasetBase* input,
                       std::function<RewriterConfig(void)> config_factory,
                       bool record_fingerprint, DatasetBase** rewritten_input) {
+  return RewriteDataset(ctx, input, config_factory, record_fingerprint,
+                        rewritten_input, /*output_graph_def=*/nullptr);
+}
+
+Status RewriteDataset(OpKernelContext* ctx, const DatasetBase* input,
+                      std::function<RewriterConfig(void)> config_factory,
+                      bool record_fingerprint, DatasetBase** rewritten_input,
+                      GraphDef* output_graph_def) {
   std::vector<std::pair<string, Tensor>> input_list;
   GraphDef graph_def;
   string output_node;
@@ -238,6 +246,27 @@ Status RewriteDataset(OpKernelContext* ctx, const DatasetBase* input,
           strings::StrCat(strings::Hex(hash, strings::kZeroPad16));
       metrics::RecordTFDataFingerprint(graph_hash);
     });
+  }
+
+  // Record graph for analysis capturing all data tensors
+  if (output_graph_def != nullptr) {
+    Status s = AsGraphDefMinimalWithInstantiableDataTensors(
+          ctx, input, &input_list, output_graph_def, &output_node);
+    if (!s.ok()) {
+      VLOG(0) << "AsGraphDefMinimal failed (probably due to the usage of "
+              << "DT_RESOURCE). Fallback to normal view.";
+      // This preserves the original view of graphdef, though it leaves in
+      // placeholders and resources
+      graph.ToGraphDef(output_graph_def);
+      // TODO(mkuchnik): Need to patch in placeholder values.
+    } else {
+      TF_RETURN_IF_ERROR(
+          ApplyRewrites(ctx, config_factory, output_graph_def, &output_node));
+      Graph graph2(OpRegistry::Global());
+      TF_RETURN_IF_ERROR(ImportGraphDef({}, *output_graph_def, &graph2, nullptr));
+      graph2.ToGraphDef(output_graph_def);  // This preserves view of graphdef
+    }
+    VLOG(3) << "Outputing graphdef:\n" << output_graph_def->DebugString();
   }
 
   return Status::OK();

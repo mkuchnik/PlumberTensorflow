@@ -344,6 +344,19 @@ py_library(
 )
 
 py_library(
+    name = "sleep",
+    srcs = [
+        "sleep.py",
+    ],
+    srcs_version = "PY2AND3",
+    deps = [
+        "//tensorflow/python:experimental_dataset_ops_gen",
+        "//tensorflow/python/data/ops:dataset_ops",
+        "//tensorflow/python/data/util:structure",
+    ],
+)
+
+py_library(
     name = "snapshot",
     srcs = [
         "snapshot.py",
@@ -422,6 +435,7 @@ py_library(
         ":readers",
         ":resampling",
         ":scan_ops",
+        ":sleep",
         ":shuffle_ops",
         ":snapshot",
         ":take_while_ops",

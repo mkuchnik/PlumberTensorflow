@@ -121,6 +121,10 @@ class Env {
   Status NewRandomAccessFile(const std::string& fname,
                              std::unique_ptr<RandomAccessFile>* result);
 
+  Status NewRandomAccessFile(const std::string& fname,
+                             std::unique_ptr<RandomAccessFile>* result,
+                             const FileOptions& options);
+
   Status NewRandomAccessFile(const std::string& fname, TransactionToken* token,
                              std::unique_ptr<RandomAccessFile>* result) {
     // We duplicate these methods due to Google internal coding style prevents
