@@ -143,7 +143,8 @@ Status AsGraphDefMinimal(OpKernelContext* ctx, const DatasetBase* input,
 Status AsGraphDefMinimalWithInstantiableDataTensors(
     OpKernelContext* ctx, const DatasetBase* input,
     std::vector<std::pair<string, Tensor>>* input_list,
-    GraphDef* result, string* dataset_node);
+    GraphDef* result, string* dataset_node,
+    bool no_serialize_udf_data_tensors);
 
 }  // namespace data
 }  // namespace tensorflow

@@ -251,7 +251,15 @@ Status RewriteDataset(OpKernelContext* ctx, const DatasetBase* input,
   // Record graph for analysis capturing all data tensors
   if (output_graph_def != nullptr) {
     Status s = AsGraphDefMinimalWithInstantiableDataTensors(
-          ctx, input, &input_list, output_graph_def, &output_node);
+          ctx, input, &input_list, output_graph_def, &output_node,
+          /*no_serialize_udf_data_tensors=*/false);
+    if (!s.ok()) {
+      VLOG(0) << "AsGraphDefMinimal failed (probably due to the usage of "
+              << "DT_RESOURCE). Retrying without UDFs.";
+      s = AsGraphDefMinimalWithInstantiableDataTensors(
+            ctx, input, &input_list, output_graph_def, &output_node,
+            /*no_serialize_udf_data_tensors=*/true);
+    }
     if (!s.ok()) {
       VLOG(0) << "AsGraphDefMinimal failed (probably due to the usage of "
               << "DT_RESOURCE). Fallback to normal view.";
